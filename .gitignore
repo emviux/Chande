@@ -1,0 +1,46 @@
+# Secrets and local configuration
+.env
+*.env
+!.env.example
+data/
+updates/
+user_config.json
+market_cache.json
+request_budget.json
+update_state.json
+*.key
+*.pem
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# PyInstaller & release build artifacts
+build/
+dist/
+release/
+*.spec
+
+# Local workspace reference files (not part of distribution)
+currency_gold_widget_icon_pack/
+preferred UI.png
+
+# Logs and backups
+*.log
+*.bak
+*.tmp
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
