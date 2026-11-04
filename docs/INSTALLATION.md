@@ -12,12 +12,12 @@ You do **not** need Python installed on your computer.
 
 ### Step 1: Download the Latest Release
 1. Open the GitHub repository's **Releases** page.
-2. Under the latest release (e.g., `v1.2.0`), download:
-   - **`Chande-v1.2.0-Windows-x64.zip`**
-   - *(Optional)* `Chande-v1.2.0-Windows-x64.zip.sha256` to verify file integrity.
+2. Under the latest release (e.g., `v1.3.1`), download:
+   - **`Chande-v1.3.1-Windows-x64.zip`**
+   - *(Optional)* `Chande-v1.3.1-Windows-x64.zip.sha256` to verify file integrity.
 
 ### Step 2: Extract to a Permanent Folder
-1. Right-click `Chande-v1.2.0-Windows-x64.zip` and choose **Extract All...**.
+1. Right-click `Chande-v1.3.1-Windows-x64.zip` and choose **Extract All...**.
 2. Choose a permanent destination folder (for example, `C:\Users\<YourUsername>\Apps\Chande` or a folder on your Desktop).
    > **Important:** Always extract the entire folder before running `Chande.exe`. Do not double-click `Chande.exe` from inside the unextracted `.zip` preview window.
 
@@ -39,11 +39,11 @@ You do **not** need Python installed on your computer.
 
 ### مرحله ۱: دانلود آخرین نسخه
 ۱. به صفحه **Releases** مخزن گیت‌هاب مراجعه کنید.
-۲. از بخش آخرین نسخه منتشرشده (مانند `v1.2.0`)، فایل زیر را دانلود کنید:
-   - **`Chande-v1.2.0-Windows-x64.zip`**
+۲. از بخش آخرین نسخه منتشرشده (مانند `v1.3.1`)، فایل زیر را دانلود کنید:
+   - **`Chande-v1.3.1-Windows-x64.zip`**
 
 ### مرحله ۲: استخراج فایل فشرده (Extract)
-۱. روی فایل `Chande-v1.2.0-Windows-x64.zip` راست‌کلیک کرده و گزینه **Extract All...** را انتخاب کنید.
+۱. روی فایل `Chande-v1.3.1-Windows-x64.zip` راست‌کلیک کرده و گزینه **Extract All...** را انتخاب کنید.
 ۲. یک پوشه دائمی (مثلاً در `C:\Users\<YourName>\Apps\Chande` یا روی دسکتاپ) انتخاب کنید.
    > **توجه مهم:** حتماً کل پوشه را Extract کنید و فایل `Chande.exe` را مستقیماً از داخل پنجره پیش‌نمایش فایل ZIP اجرا نکنید.
 

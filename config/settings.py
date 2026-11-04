@@ -189,6 +189,27 @@ class AppSettings:
             upd_hours = DEFAULT_UPDATE_CHECK_INTERVAL_HOURS
         self.update_check_interval_hours = max(1, min(168, upd_hours))
 
+        for coord_attr in ("window_x", "window_y"):
+            raw_coord = getattr(self, coord_attr, None)
+            if raw_coord is None or isinstance(raw_coord, bool):
+                setattr(self, coord_attr, None)
+            else:
+                try:
+                    setattr(self, coord_attr, int(round(float(raw_coord))))
+                except (TypeError, ValueError):
+                    setattr(self, coord_attr, None)
+
+        for dim_attr in ("window_width", "window_height"):
+            raw_dim = getattr(self, dim_attr, None)
+            if raw_dim is None or isinstance(raw_dim, bool):
+                setattr(self, dim_attr, None)
+            else:
+                try:
+                    val_dim = int(round(float(raw_dim)))
+                    setattr(self, dim_attr, val_dim if val_dim > 0 else None)
+                except (TypeError, ValueError):
+                    setattr(self, dim_attr, None)
+
     def get_effective_api_key(self) -> str:
         """Return the configured API key, prioritizing user settings then environment variable."""
         if self.api_key and self.api_key.strip():
@@ -206,7 +227,7 @@ class AppSettings:
         env_repo = normalize_github_repo(os.environ.get("CHANDE_GITHUB_REPO", ""))
         if env_repo and env_repo.lower() != "owner/chande":
             return env_repo
-        return detect_git_remote_repo()
+        return detect_git_remote_repo() or "emviux/Chande"
 
 
 class SettingsManager:

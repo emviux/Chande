@@ -430,9 +430,6 @@ def test_exact_location_and_size_persistence_across_restarts_and_settings(qapp, 
     win_restarted._is_quitting = True
     win_restarted.close()
 
-    win_restarted._is_quitting = True
-    win_restarted.close()
-
 
 def test_continuous_resizing_zero_api_calls_and_preserve_gadget_behavior(qapp, tmp_path: Path):
     """Continuous live resizing across 45 steps must issue 0 API calls, stay fast, and keep gadget styles intact."""
@@ -467,5 +464,159 @@ def test_continuous_resizing_zero_api_calls_and_preserve_gadget_behavior(qapp, t
     assert bool(ex_style & WS_EX_TOOLWINDOW) is True
     assert bool(ex_style & WS_EX_NOACTIVATE) is True
 
+    win._is_quitting = True
+    win.close()
+
+
+def test_custom_size_420x580_persists_across_restarts_and_size_grip_rtl_ltr(qapp, tmp_path: Path):
+    """Verify custom dimensions (e.g. 420x580) and QSizeGrip dragging in RTL/LTR persist and restore accurately."""
+    from ui.settings_dialog import SettingsDialog
+
+    win, sm, cs, bm, mock_session, cfg_file = _create_window(tmp_path)
+    win.show_gadget_without_focus()
+    qapp.processEvents()
+
+    # 1. Resize to 420x580 (narrower than the old 606px layout minimumSizeHint, taller than 480px default)
+    win.resize(420, 580)
+    win.move(160, 110)
+    qapp.processEvents()
+
+    assert win.width() == 420
+    assert win.height() == 580
+    assert sm.settings.window_width == 420
+    assert sm.settings.window_height == 580
+
+    # 2. Toggling show_secondary_cards or saving Settings must NOT overwrite custom 420x580 dimensions
+    dlg = SettingsDialog(
+        settings_manager=sm,
+        budget_manager=bm,
+        cache_store=cs,
+        api_client=win.api_client,
+        parent=win,
+    )
+    dlg.settings_saved.connect(win._on_settings_saved)
+    dlg.show_secondary_cb.setChecked(False)
+    dlg._on_save()
+    qapp.processEvents()
+
+    assert win.width() == 420
+    assert win.height() == 580
+    assert sm.settings.window_width == 420
+    assert sm.settings.window_height == 580
+
+    # 3. Close and restart a new MainWindow instance -> must restore exact 420x580 dimensions before showing
+    win._is_quitting = True
+    win.close()
+
+    sm2 = SettingsManager(config_path=cfg_file)
+    assert sm2.settings.window_width == 420
+    assert sm2.settings.window_height == 580
+
+    win2 = MainWindow(
+        settings_manager=sm2,
+        budget_manager=bm,
+        cache_store=cs,
+        api_client=win.api_client,
+        enable_tray=False,
+        auto_start_schedule=False,
+    )
+    assert win2.width() == 420
+    assert win2.height() == 580
+    win2.show_gadget_without_focus()
+    qapp.processEvents()
+    assert win2.width() == 420
+    assert win2.height() == 580
+
+    # 4. Test QSizeGrip interactive drag in Persian (RTL: bottom-left corner) and English (LTR: bottom-right corner)
+    win2.set_language("fa")
+    qapp.processEvents()
+    start_global = win2.size_grip.mapToGlobal(QPoint(7, 7))
+    press_ev = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        QPointF(7, 7),
+        QPointF(start_global),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    qapp.sendEvent(win2.size_grip, press_ev)
+
+    # In RTL, dragging left by -30px increases width by +30px (420 -> 450), dragging down by +20px increases height (580 -> 600)
+    target_global = start_global + QPoint(-30, 20)
+    move_ev = QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        QPointF(7, 7),
+        QPointF(target_global),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    qapp.sendEvent(win2.size_grip, move_ev)
+
+    rel_ev = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        QPointF(7, 7),
+        QPointF(target_global),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    qapp.sendEvent(win2.size_grip, rel_ev)
+    qapp.processEvents()
+
+    assert win2.width() == 450
+    assert win2.height() == 600
+
+    # Verify QSizeGrip release immediately flushed 450x600 to disk
+    sm3 = SettingsManager(config_path=cfg_file)
+    assert sm3.settings.window_width == 450
+    assert sm3.settings.window_height == 600
+
+    assert mock_session.get.call_count == 0
+    win2._is_quitting = True
+    win2.close()
+
+
+def test_oversized_saved_dimensions_scale_proportionally_and_offscreen_clamps_without_losing_size(
+    qapp, tmp_path: Path
+):
+    """Verify off-screen position clamping preserves custom dimensions and oversized dimensions scale proportionally."""
+    from unittest.mock import patch
+
+    win, sm, cs, bm, mock_session, cfg_file = _create_window(tmp_path)
+
+    # 1. Off-screen coordinates with custom 420x580 size -> position clamped, 420x580 preserved
+    sm.update(window_x=-50000, window_y=50000, window_width=420, window_height=580)
+    win2 = MainWindow(
+        settings_manager=sm,
+        budget_manager=bm,
+        cache_store=cs,
+        api_client=win.api_client,
+        enable_tray=False,
+        auto_start_schedule=False,
+    )
+    win2.show_gadget_without_focus()
+    qapp.processEvents()
+    assert win2.width() == 420
+    assert win2.height() == 580
+
+    # 2. Simulate a smaller monitor (e.g. 600x450 available area) when widget is 600x600 (1:1 aspect ratio)
+    from PySide6.QtGui import QGuiApplication
+
+    win2.resize(600, 600)
+    fake_screen = MagicMock()
+    fake_screen.availableGeometry.return_value = QRect(0, 0, 600, 450)
+    with patch.object(QGuiApplication, "screens", return_value=[fake_screen]), patch.object(
+        QGuiApplication, "primaryScreen", return_value=fake_screen
+    ):
+        win2.clamp_to_visible_desktop()
+
+    # 600x600 scaled proportionally to fit 600x450 must become 450x450 (preserving 1:1 aspect ratio)
+    assert win2.width() == 450
+    assert win2.height() == 450
+
+    assert mock_session.get.call_count == 0
+    win2._is_quitting = True
+    win2.close()
     win._is_quitting = True
     win.close()

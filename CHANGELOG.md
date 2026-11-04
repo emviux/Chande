@@ -8,6 +8,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.3.1] - 2026-11-05
+
+### Added / Improved
+- Persistent window size across application restarts (`window_width`, `window_height`, and `display_mode` restored before showing the widget, with proportional scaling if saved dimensions exceed available screen area).
+- Improved Windows desktop-gadget window management (`DesktopShellEventMonitor` via `SetWinEventHook`, `nativeEvent` Win32 shell message interception, and `DWMWA_EXCLUDED_FROM_PEEK` / `DWMWA_TRANSITIONS_FORCEDISABLED`).
+
+### Fixed
+- Chande no longer disappears or minimizes when clicking the Windows **Show Desktop** button (`TrayShowDesktopButtonWClass` / `Win+D` / `ToggleDesktop`).
+- Restored the user's last selected window dimensions accurately on startup (`minimumSizeHint` / `SetNoConstraint` no longer overrides custom dimensions such as `420×580`, and `QSizeGrip` resizing in both RTL Persian and LTR English flushes immediately on mouse release).
+
+---
+
 ## [1.2.0] - 2026-11-03
 
 ### Added / قابلیت‌های جدید

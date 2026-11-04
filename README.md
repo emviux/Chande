@@ -29,7 +29,7 @@
 Most users **do not need Python or programming tools**. You can run Chande directly from the portable Windows release package:
 
 1. **Download the Release ZIP:**
-   Go to the repository's **Releases** page and download the latest **`Chande-v1.2.0-Windows-x64.zip`**.
+   Go to the repository's **Releases** page and download the latest **`Chande-v1.3.1-Windows-x64.zip`**.
 2. **Extract the Folder:**
    Right-click the downloaded `.zip` file, click **Extract All...**, and extract it to a permanent folder (for example, `C:\Users\<YourName>\Apps\Chande`).
 3. **Run Chande:**
@@ -49,7 +49,7 @@ Most users **do not need Python or programming tools**. You can run Chande direc
 برای استفاده از **چنده (Chande)** نیازی به نصب پایتون یا ابزارهای برنامه‌نویسی ندارید:
 
 ۱. **دانلود نسخه آماده ویندوز:**
-   به بخش **Releases** در مخزن گیت‌هاب بروید و آخرین فایل **`Chande-v1.2.0-Windows-x64.zip`** را دانلود کنید.
+   به بخش **Releases** در مخزن گیت‌هاب بروید و آخرین فایل **`Chande-v1.3.1-Windows-x64.zip`** را دانلود کنید.
 ۲. **استخراج فایل فشرده (Extract):**
    روی فایل ZIP راست‌کلیک کرده و گزینه **Extract All...** را بزنید تا محتویات آن در یک پوشه دائمی (مثلاً روی دسکتاپ یا پوشه برنامه‌هایتان) استخراج شود.
 ۳. **اجرای برنامه:**
@@ -134,7 +134,7 @@ Chande includes an integrated updater (`updater/`) accessible via **Settings (`�
 
 ### 1. Clone and Install Dependencies
 ```powershell
-git clone https://github.com/OWNER/Chande.git
+git clone https://github.com/emviux/Chande.git
 cd Chande
 python -m venv .venv
 .\.venv\Scripts\activate
@@ -150,7 +150,7 @@ Edit `.env` and set your key:
 ```ini
 NAVASAN_API_KEY=your_navasan_api_key_here
 CHANDE_API_PROVIDER=navasan
-CHANDE_GITHUB_REPO=OWNER/Chande
+CHANDE_GITHUB_REPO=emviux/Chande
 ```
 *(Note: `.env` and `data/` are gitignored and never committed.)*
 
@@ -160,7 +160,7 @@ python main.py
 ```
 
 ### 4. Run Automated Tests
-Chande includes 65 automated unit and integration tests covering API budget rules, bilingual i18n, Win32 gadget behavior, smooth resizing, occlusion sleep/wake, and the GitHub auto-updater:
+Chande includes 68 automated unit and integration tests covering API budget rules, bilingual i18n, Win32 gadget behavior, smooth resizing, occlusion sleep/wake, and the GitHub auto-updater:
 ```powershell
 pytest -v
 ```
@@ -170,7 +170,7 @@ To build `dist\Chande\Chande.exe`:
 ```powershell
 scripts\build.bat
 ```
-To build the complete distributable release archive (`dist\Chande-v1.2.0-Windows-x64.zip`) and SHA-256 checksum files (`dist\Chande-v1.2.0-Windows-x64.zip.sha256` and `dist\SHA256SUMS.txt`):
+To build the complete distributable release archive (`dist\Chande-v1.3.1-Windows-x64.zip`) and SHA-256 checksum files (`dist\Chande-v1.3.1-Windows-x64.zip.sha256` and `dist\SHA256SUMS.txt`):
 ```powershell
 scripts\release.bat
 ```
@@ -196,7 +196,7 @@ Chande/
 ├── scripts/                  # Build (build.bat) and Release (release.bat) scripts
 ├── services/                 # Navasan API client, budget manager, visibility monitor
 ├── storage/                  # Atomic JSON store & market cache persistence
-├── tests/                    # 65 automated pytest unit & integration tests
+├── tests/                    # 68 automated pytest unit & integration tests
 ├── translations/             # Persian (fa.json) and English (en.json) resources
 ├── ui/                       # PySide6 main gadget window, cards, settings, update UI
 ├── updater/                  # SemVer comparator, GitHub Releases checker & installer
@@ -206,7 +206,7 @@ Chande/
 ├── CHANGELOG.md              # Full project changelog
 ├── LICENSE                   # MIT License
 ├── README.md                 # Bilingual project overview
-├── VERSION                   # Single source of truth for application version (1.2.0)
+├── VERSION                   # Single source of truth for application version (1.3.1)
 ├── main.py                   # Application entry point
 └── requirements.txt          # Python runtime, build, and test dependencies
 ```

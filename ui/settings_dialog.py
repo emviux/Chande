@@ -984,11 +984,13 @@ class SettingsDialog(QDialog):
         target_h = cur.window_height
 
         mode_changed = chosen_mode != getattr(self, "_initial_display_mode", cur.display_mode)
-        secondary_changed_in_expanded = (
+        secondary_changed_at_default_size = (
             chosen_mode == "expanded"
             and show_secondary != getattr(self, "_initial_show_secondary", cur.show_secondary_cards)
+            and cur.window_width in (None, 540)
+            and cur.window_height in (None, 390, 480)
         )
-        if mode_changed or secondary_changed_in_expanded:
+        if mode_changed or secondary_changed_at_default_size:
             if chosen_mode == "ultra_compact":
                 target_w, target_h = 250, 200
             elif chosen_mode == "compact":

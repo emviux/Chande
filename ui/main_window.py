@@ -1,11 +1,14 @@
 """Main desktop widget window for Chande (Windows 10/11 frameless glass UI)."""
 
 from __future__ import annotations
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
+import sys
 import time
 from typing import Callable, Dict, Optional
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -27,6 +30,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -65,7 +69,24 @@ from services.i18n import (
 from services.power_state import WidgetOperatingState, WidgetStateManager
 from storage.cache_store import CacheStore
 from services.windows_gadget import (
+    HWND_TOPMOST,
+    SC_MINIMIZE,
+    SWP_HIDEWINDOW,
+    SWP_NOACTIVATE,
+    SWP_NOMOVE,
+    SWP_NOSIZE,
+    SWP_NOZORDER,
+    WINDOWPOS,
+    WM_ACTIVATEAPP,
+    WM_EXITSIZEMOVE,
+    WM_SHOWWINDOW,
+    WM_SYSCOMMAND,
+    WM_WINDOWPOSCHANGED,
+    WM_WINDOWPOSCHANGING,
+    DesktopShellEventMonitor,
     apply_desktop_gadget_style,
+    ensure_gadget_visible_on_desktop,
+    is_desktop_shell_above_window,
     is_window_obscured,
     raise_gadget_without_focus,
 )
@@ -142,10 +163,14 @@ class MainWindow(QMainWindow):
         self._active_update_dialog: Optional[UpdateNotificationDialog] = None
         self._pending_update_manifest: Optional[ReleaseManifest] = None
         self._is_quitting = False
+        self._explicitly_hidden: bool = False
+        self._keep_above_show_desktop: bool = False
         self._restoring_geometry: bool = True
         self._current_state = "idle"  # "loading", "live", "cached", "error", "exhausted", "missing_key"
         self._dirty_while_sleeping: bool = False
         self._last_active_size: QSize = self.EXPANDED_SIZE
+        self._last_valid_size: QSize = self.EXPANDED_SIZE
+        self._last_valid_pos: Optional[QPoint] = None
 
         self.primary_cards: Dict[str, PrimaryPriceCard] = {}
         self.secondary_cards: Dict[str, SecondaryMiniCard] = {}
@@ -186,6 +211,14 @@ class MainWindow(QMainWindow):
         )
         self.power_manager.state_changed.connect(self._on_operating_state_changed)
 
+        # Event-driven Windows Shell monitor for 'Show Desktop' / 'Minimize All'
+        self.shell_event_monitor = DesktopShellEventMonitor(
+            target_hwnd_getter=self._safe_hwnd,
+            parent=self,
+        )
+        self.shell_event_monitor.show_desktop_detected.connect(self._on_show_desktop_detected)
+        self.shell_event_monitor.normal_window_activated.connect(self._on_normal_window_activated)
+
         self._configure_window_flags()
         self.setMinimumSize(self.MIN_WINDOW_SIZE)
         self.setMaximumSize(self.MAX_WINDOW_SIZE)
@@ -194,19 +227,25 @@ class MainWindow(QMainWindow):
         if self._enable_tray:
             self._setup_tray_icon()
 
-        # Apply persisted appearance and geometry
+        # Apply persisted appearance and geometry before showing the widget
         had_saved_pos = (
             self.settings_manager.settings.window_x is not None
             and self.settings_manager.settings.window_y is not None
+        )
+        had_saved_size = (
+            self.settings_manager.settings.window_width is not None
+            and self.settings_manager.settings.window_height is not None
         )
         self._apply_all_settings(self.settings_manager.settings, initial=True)
         if self._resize_save_timer.isActive():
             self._resize_save_timer.stop()
         self._restoring_geometry = False
         self._sync_geometry_in_memory()
-        if not had_saved_pos:
+        if not had_saved_pos or not had_saved_size:
             self._persist_geometry()
         self._last_active_size = self.size()
+        self._last_valid_size = self.size()
+        self._last_valid_pos = self.pos()
         self._connect_screen_change_signals()
         self._connect_app_shutdown_signals()
 
@@ -304,6 +343,18 @@ class MainWindow(QMainWindow):
             return "compact"
         return "expanded"
 
+    def minimumSizeHint(self) -> QSize:
+        """Override QMainWindow's layout minimumSizeHint so user-saved custom sizes are never expanded."""
+        return self.MIN_WINDOW_SIZE
+
+    def _safe_hwnd(self, force_create: bool = False) -> int:
+        try:
+            if not force_create and not self.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+                return 0
+            return int(self.winId())
+        except Exception:
+            return 0
+
     def _configure_window_flags(self) -> None:
         lang = self.settings_manager.settings.language
         set_current_language(lang)
@@ -319,8 +370,10 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(flags)
 
     def showEvent(self, event: QShowEvent) -> None:
+        self._explicitly_hidden = False
         super().showEvent(event)
         self._apply_native_gadget_behavior()
+        self.shell_event_monitor.start()
         self.power_manager.start()
 
     def hideEvent(self, event: QHideEvent) -> None:
@@ -330,6 +383,10 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized() and not self._explicitly_hidden and not self._is_quitting:
+                # Never allow Windows Show Desktop / Minimize All to minimize the desktop gadget
+                QTimer.singleShot(0, self._restore_after_show_desktop)
+                return
             if self.isMinimized():
                 self.power_manager.set_dormant(True)
             else:
@@ -337,15 +394,109 @@ class MainWindow(QMainWindow):
 
     def _apply_native_gadget_behavior(self) -> None:
         """Apply native Win32 extended styles (WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, HWND_TOPMOST)."""
-        try:
-            hwnd = int(self.winId())
-        except Exception:
+        hwnd = self._safe_hwnd()
+        if not hwnd:
             return
         apply_desktop_gadget_style(
             hwnd,
-            always_on_top=self.settings_manager.settings.always_on_top,
+            always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
             no_activate=True,
         )
+
+    def _on_show_desktop_detected(self) -> None:
+        """Handle Windows Show Desktop / Win+D shell events immediately without stealing focus."""
+        if self._explicitly_hidden or self._is_quitting:
+            return
+        self._keep_above_show_desktop = True
+        self._restore_after_show_desktop()
+
+    def _on_normal_window_activated(self, _foreground_hwnd: int) -> None:
+        """When a normal app window is activated after Show Desktop, restore non-topmost mode if unpinned."""
+        if self._explicitly_hidden or self._is_quitting:
+            return
+        if self._keep_above_show_desktop and not self.settings_manager.settings.always_on_top:
+            self._keep_above_show_desktop = False
+            hwnd = self._safe_hwnd()
+            if hwnd:
+                raise_gadget_without_focus(hwnd, always_on_top=False)
+        self.power_manager.evaluate_now()
+
+    def _restore_after_show_desktop(self) -> None:
+        """Keep the gadget visible in place above the raised WorkerW desktop surface during Show Desktop."""
+        if self._explicitly_hidden or self._is_quitting:
+            return
+        hwnd = self._safe_hwnd()
+        if not hwnd:
+            return
+        prev_restoring = self._restoring_geometry
+        self._restoring_geometry = True
+        try:
+            if self.isMinimized():
+                self.setWindowState(
+                    (self.windowState() & ~Qt.WindowState.WindowMinimized)
+                    | Qt.WindowState.WindowNoState
+                )
+            ensure_gadget_visible_on_desktop(
+                hwnd,
+                always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
+            )
+            if not self.isVisible():
+                self.showNormal()
+            if self._last_valid_size.isValid() and self.size() != self._last_valid_size:
+                self.resize(self._last_valid_size)
+            if self._last_valid_pos is not None and self.pos() != self._last_valid_pos:
+                self.move(self._last_valid_pos)
+        finally:
+            self._restoring_geometry = prev_restoring
+        self.power_manager.evaluate_now()
+
+    def nativeEvent(self, eventType: object, message: object) -> Tuple[bool, int]:
+        """Intercept Win32 shell window-management messages so Show Desktop never hides or minimizes Chande."""
+        if sys.platform == "win32" and not self._explicitly_hidden and not self._is_quitting:
+            try:
+                msg_addr = int(message)  # type: ignore[arg-type]
+                if msg_addr:
+                    msg = ctypes.wintypes.MSG.from_address(msg_addr)
+                    m = msg.message
+                    if m == WM_SYSCOMMAND:
+                        if (msg.wParam & 0xFFF0) == SC_MINIMIZE:
+                            self._on_show_desktop_detected()
+                            return True, 0
+                    elif m == WM_SHOWWINDOW:
+                        # Block shell-initiated hide (SW_PARENTCLOSING=1 / SW_OTHERZOOM=2 / SW_OTHERUNZOOM=4)
+                        if msg.wParam == 0 and msg.lParam != 0:
+                            QTimer.singleShot(0, self._on_show_desktop_detected)
+                            return True, 0
+                    elif m == WM_WINDOWPOSCHANGING and msg.lParam:
+                        wp = WINDOWPOS.from_address(msg.lParam)
+                        # Block shell hide flag unless explicitly hidden by user
+                        if wp.flags & SWP_HIDEWINDOW:
+                            wp.flags &= ~SWP_HIDEWINDOW
+                        # Block shell attempts to move the gadget to iconic offscreen coordinates (-32000, -32000)
+                        if not (wp.flags & SWP_NOMOVE) and (wp.x <= -30000 or wp.y <= -30000):
+                            wp.flags |= SWP_NOMOVE
+                        if not (wp.flags & SWP_NOSIZE) and (
+                            wp.cx < self.MIN_WINDOW_SIZE.width() or wp.cy < self.MIN_WINDOW_SIZE.height()
+                        ):
+                            wp.flags |= SWP_NOSIZE
+                        # Prevent shell from demoting Z-order during Show Desktop or when pinned
+                        if self.settings_manager.settings.always_on_top or self._keep_above_show_desktop:
+                            if not (wp.flags & SWP_NOZORDER):
+                                if wp.hwndInsertAfter not in (HWND_TOPMOST, 0xFFFFFFFFFFFFFFFF, -1):
+                                    wp.hwndInsertAfter = HWND_TOPMOST
+                    elif m == WM_WINDOWPOSCHANGED:
+                        hwnd = int(msg.hWnd or 0)
+                        if hwnd and self.isVisible() and is_desktop_shell_above_window(hwnd):
+                            QTimer.singleShot(0, self._on_show_desktop_detected)
+                    elif m == WM_ACTIVATEAPP and msg.wParam == 0:
+                        hwnd = int(msg.hWnd or 0)
+                        if hwnd and self.isVisible() and is_desktop_shell_above_window(hwnd):
+                            QTimer.singleShot(0, self._on_show_desktop_detected)
+                    elif m == WM_EXITSIZEMOVE:
+                        QTimer.singleShot(0, self._persist_geometry)
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     def _build_ui(self) -> None:
         lang = self.settings_manager.settings.language
@@ -356,6 +507,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.central_container)
 
         self._root_layout = QVBoxLayout(self.central_container)
+        self._root_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._root_layout.setContentsMargins(16, 14, 16, 12)
         self._root_layout.setSpacing(10)
 
@@ -472,6 +624,7 @@ class MainWindow(QMainWindow):
         self.expanded_page = QWidget()
         self.expanded_page.setMouseTracking(True)
         self._exp_layout = QVBoxLayout(self.expanded_page)
+        self._exp_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._exp_layout.setContentsMargins(0, 0, 0, 0)
         self._exp_layout.setSpacing(10)
 
@@ -563,6 +716,7 @@ class MainWindow(QMainWindow):
 
         self.size_grip = QSizeGrip(self.footer_frame)
         self.size_grip.setFixedSize(14, 14)
+        self.size_grip.installEventFilter(self)
         grip_align = Qt.AlignmentFlag.AlignBottom | (
             Qt.AlignmentFlag.AlignLeft if is_rtl(lang) else Qt.AlignmentFlag.AlignRight
         )
@@ -639,12 +793,15 @@ class MainWindow(QMainWindow):
     def _toggle_visibility_from_tray(self) -> None:
         """Restore or hide the widget without issuing any API request or stealing focus."""
         if self.isVisible() and not self.isMinimized():
+            self._explicitly_hidden = True
             self.hide()
         else:
+            self._explicitly_hidden = False
             self.show_gadget_without_focus()
 
     def show_gadget_without_focus(self) -> None:
         """Show and raise the desktop gadget above normal windows without stealing active focus."""
+        self._explicitly_hidden = False
         s = self.settings_manager.settings
         target_x = s.window_x if s.window_x is not None else self.x()
         target_y = s.window_y if s.window_y is not None else self.y()
@@ -663,21 +820,23 @@ class MainWindow(QMainWindow):
             clamped_pos = self.pos()
             clamped_size = self.size()
             self.showNormal()
+            self._apply_native_gadget_behavior()
+            try:
+                raise_gadget_without_focus(
+                    int(self.winId()),
+                    always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
+                )
+            except Exception:
+                pass
             if self.size() != clamped_size:
                 self.resize(clamped_size)
             if self.pos() != clamped_pos:
                 self.move(clamped_pos)
+            self._last_valid_size = clamped_size
+            self._last_valid_pos = clamped_pos
         finally:
             self._restoring_geometry = prev_restoring
         self._sync_geometry_in_memory()
-        self._apply_native_gadget_behavior()
-        try:
-            raise_gadget_without_focus(
-                int(self.winId()),
-                always_on_top=self.settings_manager.settings.always_on_top,
-            )
-        except Exception:
-            pass
 
     def on_second_instance_activated(self) -> None:
         """Handle second-launch notification: show existing gadget without calling API."""
@@ -757,9 +916,23 @@ class MainWindow(QMainWindow):
             target_screen = QGuiApplication.primaryScreen() or screens[0]
 
         avail = target_screen.availableGeometry()
-        # Clamp size if screen is smaller than widget
-        clamped_w = min(w, avail.width())
-        clamped_h = min(h, avail.height())
+        # Scale proportionally if saved dimensions exceed available screen area; otherwise preserve exact size
+        max_avail_w = max(self.MIN_WINDOW_SIZE.width(), avail.width())
+        max_avail_h = max(self.MIN_WINDOW_SIZE.height(), avail.height())
+        if w > max_avail_w or h > max_avail_h:
+            scale = min(max_avail_w / float(w), max_avail_h / float(h))
+            clamped_w = max(
+                self.MIN_WINDOW_SIZE.width(),
+                min(max_avail_w, int(round(w * scale))),
+            )
+            clamped_h = max(
+                self.MIN_WINDOW_SIZE.height(),
+                min(max_avail_h, int(round(h * scale))),
+            )
+        else:
+            clamped_w = w
+            clamped_h = h
+
         if clamped_w != self.width() or clamped_h != self.height():
             self.resize(clamped_w, clamped_h)
 
@@ -1075,9 +1248,17 @@ class MainWindow(QMainWindow):
                     self.move(default_x, default_y)
 
             self.clamp_to_visible_desktop()
+            clamped_size = self.size()
+            clamped_pos = self.pos()
             self.retranslate_ui()
             self.apply_theme(s.theme)
-            self._apply_responsive_layout(self.width(), self.height(), force=True)
+            self._apply_responsive_layout(clamped_size.width(), clamped_size.height(), force=True)
+            if self.size() != clamped_size:
+                self.resize(clamped_size)
+            if self.pos() != clamped_pos:
+                self.move(clamped_pos)
+            self._last_valid_size = self.size()
+            self._last_valid_pos = self.pos()
             self._refresh_cards_from_memory()
             self._update_footer_and_freshness()
         finally:
@@ -1902,6 +2083,44 @@ class MainWindow(QMainWindow):
         return target_rect
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is getattr(self, "size_grip", None) and isinstance(event, QMouseEvent):
+            grip_edges = Qt.Edge.BottomEdge | (
+                Qt.Edge.LeftEdge if is_rtl(self.language) else Qt.Edge.RightEdge
+            )
+            if (
+                event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._resize_edges = grip_edges
+                self._resize_start_global = event.globalPosition().toPoint()
+                self._resize_start_geom = self.geometry()
+                self._drag_pos = None
+                self.setCursor(self.cursor_for_edges(grip_edges))
+                event.accept()
+                return True
+            if (
+                event.type() == QEvent.Type.MouseMove
+                and self._resize_edges != Qt.Edge(0)
+                and self._resize_start_global is not None
+                and self._resize_start_geom is not None
+                and (event.buttons() & Qt.MouseButton.LeftButton)
+            ):
+                delta = event.globalPosition().toPoint() - self._resize_start_global
+                self.perform_edge_resize(self._resize_edges, delta, self._resize_start_geom)
+                event.accept()
+                return True
+            if (
+                event.type() == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._resize_edges = Qt.Edge(0)
+                self._resize_start_global = None
+                self._resize_start_geom = None
+                self.unsetCursor()
+                self._persist_geometry()
+                event.accept()
+                return True
+
         if watched is self.central_container and event.type() == QEvent.Type.MouseMove:
             if not self.power_manager.is_active:
                 return False
@@ -1987,9 +2206,12 @@ class MainWindow(QMainWindow):
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
+        pos = event.pos()
+        if self.isMinimized() or pos.x() <= -30000 or pos.y() <= -30000:
+            return
+        self._last_valid_pos = pos
         if getattr(self, "_restoring_geometry", False):
             return
-        pos = event.pos()
         s = self.settings_manager.settings
         if s.window_x == pos.x() and s.window_y == pos.y():
             return
@@ -2000,6 +2222,13 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         sz = event.size()
+        if (
+            self.isMinimized()
+            or sz.width() < self.MIN_WINDOW_SIZE.width()
+            or sz.height() < self.MIN_WINDOW_SIZE.height()
+        ):
+            return
+        self._last_valid_size = sz
         if self.power_manager.is_active:
             self._last_active_size = sz
             self._apply_responsive_layout(sz.width(), sz.height())
@@ -2021,7 +2250,23 @@ class MainWindow(QMainWindow):
     def _sync_geometry_in_memory(self) -> None:
         """Synchronize in-memory settings with the widget's current position, size, and responsive mode."""
         pos = self.pos()
+        if self.isMinimized() or pos.x() <= -30000 or pos.y() <= -30000:
+            if self._last_valid_pos is not None:
+                pos = self._last_valid_pos
+        else:
+            self._last_valid_pos = pos
+
         sz = self.size()
+        if (
+            self.isMinimized()
+            or sz.width() < self.MIN_WINDOW_SIZE.width()
+            or sz.height() < self.MIN_WINDOW_SIZE.height()
+        ):
+            if self._last_valid_size.isValid():
+                sz = self._last_valid_size
+        else:
+            self._last_valid_size = sz
+
         s = self.settings_manager.settings
         s.window_x = pos.x()
         s.window_y = pos.y()
@@ -2033,7 +2278,23 @@ class MainWindow(QMainWindow):
         if self._resize_save_timer.isActive():
             self._resize_save_timer.stop()
         pos = self.pos()
+        if self.isMinimized() or pos.x() <= -30000 or pos.y() <= -30000:
+            if self._last_valid_pos is not None:
+                pos = self._last_valid_pos
+        else:
+            self._last_valid_pos = pos
+
         sz = self.size()
+        if (
+            self.isMinimized()
+            or sz.width() < self.MIN_WINDOW_SIZE.width()
+            or sz.height() < self.MIN_WINDOW_SIZE.height()
+        ):
+            if self._last_valid_size.isValid():
+                sz = self._last_valid_size
+        else:
+            self._last_valid_size = sz
+
         mode = self.compute_responsive_mode(sz.width(), sz.height())
         self.settings_manager.update(
             window_x=pos.x(),
@@ -2047,14 +2308,17 @@ class MainWindow(QMainWindow):
         self._persist_geometry()
         if not self._is_quitting and getattr(self, "tray_icon", None) is not None and self.tray_icon.isVisible():
             event.ignore()
+            self._explicitly_hidden = True
             self.hide()
             self.power_manager.set_dormant(True)
             return
+        self.shell_event_monitor.stop()
         self.power_manager.stop()
         super().closeEvent(event)
 
     def quit_application(self) -> None:
         self._is_quitting = True
+        self.shell_event_monitor.stop()
         self.power_manager.stop()
         self._schedule_timer.stop()
         self._update_startup_timer.stop()

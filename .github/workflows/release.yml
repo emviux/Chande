@@ -53,6 +53,7 @@ jobs:
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build and package Windows x64 release
+        shell: cmd
         run: |
           call scripts\release.bat
 

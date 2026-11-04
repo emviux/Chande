@@ -34,7 +34,7 @@ else:
     BUNDLE_DIR = ROOT_DIR
 
 
-def load_app_version(default: str = "1.2.0") -> str:
+def load_app_version(default: str = "1.3.1") -> str:
     """Read the central application version from the VERSION file."""
     for candidate in (BUNDLE_DIR / "VERSION", ROOT_DIR / "VERSION"):
         try:
@@ -48,7 +48,7 @@ def load_app_version(default: str = "1.2.0") -> str:
 
 
 VERSION_FILE = ROOT_DIR / "VERSION"
-APP_VERSION = load_app_version("1.2.0")
+APP_VERSION = load_app_version("1.3.1")
 
 ASSETS_DIR = BUNDLE_DIR / "assets"
 ICONS_DIR = ASSETS_DIR / "icons"

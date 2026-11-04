@@ -14,14 +14,23 @@ from config.settings import AppSettings, SettingsManager
 from services.api_client import MarketApiClient
 from services.budget_manager import RequestBudgetManager
 from services.windows_gadget import (
+    HWND_BOTTOM,
+    HWND_TOPMOST,
+    SC_MINIMIZE,
+    SWP_HIDEWINDOW,
+    SWP_NOACTIVATE,
+    WM_SHOWWINDOW,
+    WM_SYSCOMMAND,
     WS_EX_APPWINDOW,
     WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
     SingleInstanceController,
     WindowsStartupManager,
+    ensure_gadget_visible_on_desktop,
     get_window_ex_style,
     is_window_in_alt_tab,
+    is_window_minimized_or_hidden,
     is_window_stealing_foreground,
     is_window_topmost,
 )
@@ -208,6 +217,123 @@ def test_tray_menu_actions_and_zero_extra_api_calls(qapp, tmp_path: Path) -> Non
         assert win.isVisible() is True
 
         assert mock_fetch.call_count == 0
+    if win.tray_icon is not None:
+        win.tray_icon.hide()
+    win._is_quitting = True
+    win.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Show Desktop shell behavior test")
+def test_windows_show_desktop_keeps_gadget_visible_and_unminimized(qapp, tmp_path: Path) -> None:
+    """Verify clicking the Windows Show Desktop button (or Win+D) never minimizes, hides, or covers Chande."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    win = _make_gadget(tmp_path, enable_tray=True)
+    win.resize(420, 580)
+    win.move(220, 140)
+    win.show_gadget_without_focus()
+    qapp.processEvents()
+
+    hwnd = int(win.winId())
+    initial_pos = win.pos()
+    initial_size = win.size()
+
+    # Open a normal maximized application window alongside Chande
+    normal_app = QMainWindow()
+    normal_app.setWindowTitle("Maximized Normal App")
+    normal_app.resize(900, 650)
+    normal_app.showMaximized()
+    normal_app.raise_()
+    normal_app.activateWindow()
+    qapp.processEvents()
+
+    # Create a mock desktop shell surface window representing Explorer's WorkerW / Progman
+    shell_surface = QMainWindow()
+    shell_surface.setWindowTitle("Program Manager")
+    shell_surface.setGeometry(0, 0, 1280, 720)
+    shell_surface.show()
+    qapp.processEvents()
+    shell_hwnd = int(shell_surface.winId())
+
+    with patch.object(win.api_client, "fetch_latest") as mock_fetch:
+        # 1. Simulate shell sending WM_SYSCOMMAND + SC_MINIMIZE (Minimize All)
+        user32.SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0)
+        qapp.processEvents()
+        assert win.isVisible() is True
+        assert win.isMinimized() is False
+        assert is_window_minimized_or_hidden(hwnd) is False
+        assert win.size() == initial_size
+        assert win.pos() == initial_pos
+
+        # 2. Simulate shell sending WM_SHOWWINDOW with SW_PARENTCLOSING (lParam=1)
+        user32.SendMessageW(hwnd, WM_SHOWWINDOW, 0, 1)
+        qapp.processEvents()
+        assert win.isVisible() is True
+        assert win.isMinimized() is False
+        assert win.size() == initial_size
+        assert win.pos() == initial_pos
+
+        # 3. Simulate shell SetWindowPos trying to hide Chande, move it to (-32000, -32000), or drop it to HWND_BOTTOM
+        user32.SetWindowPos(
+            hwnd,
+            HWND_BOTTOM,
+            -32000,
+            -32000,
+            160,
+            28,
+            SWP_HIDEWINDOW | SWP_NOACTIVATE,
+        )
+        qapp.processEvents()
+        assert win.isVisible() is True
+        assert is_window_minimized_or_hidden(hwnd) is False
+        assert is_window_topmost(hwnd) is True
+        assert win.size() == initial_size
+        assert win.pos() == initial_pos
+
+        # 4. Simulate Windows Show Desktop raising WorkerW above all windows into HWND_TOPMOST (multiple toggles)
+        with patch("services.windows_gadget.find_desktop_shell_hwnds", return_value=[shell_hwnd]):
+            for _ in range(3):
+                # Explorer raises WorkerW to top of HWND_TOPMOST band on Show Desktop click
+                user32.SetWindowPos(shell_hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
+                win._on_show_desktop_detected()
+                qapp.processEvents()
+
+                assert win.isVisible() is True
+                assert win.isMinimized() is False
+                assert is_window_topmost(hwnd) is True
+                assert is_window_in_alt_tab(hwnd) is False
+                assert is_window_stealing_foreground(hwnd) is False
+                assert win.size() == initial_size
+                assert win.pos() == initial_pos
+
+                # Toggle Show Desktop off by activating the normal app window
+                win._on_normal_window_activated(int(normal_app.winId()))
+                qapp.processEvents()
+                assert win.isVisible() is True
+                assert win.size() == initial_size
+                assert win.pos() == initial_pos
+
+        # 5. Also verify Show Desktop protection when user has Always-on-Top unchecked (unpinned desktop gadget)
+        win.settings_manager.update(always_on_top=False)
+        with patch("services.windows_gadget.find_desktop_shell_hwnds", return_value=[shell_hwnd]):
+            user32.SetWindowPos(shell_hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
+            win._on_show_desktop_detected()
+            qapp.processEvents()
+            assert win.isVisible() is True
+            assert is_window_topmost(hwnd) is True
+            assert win.size() == initial_size
+
+            # When normal window is activated again, unpinned gadget returns to non-topmost cleanly
+            win._on_normal_window_activated(int(normal_app.winId()))
+            qapp.processEvents()
+            assert win.isVisible() is True
+            assert win.size() == initial_size
+
+        assert mock_fetch.call_count == 0
+
+    shell_surface.close()
+    normal_app.close()
     if win.tray_icon is not None:
         win.tray_icon.hide()
     win._is_quitting = True
