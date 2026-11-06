@@ -13,7 +13,11 @@ from config.settings import SettingsManager
 from services.api_client import MarketApiClient
 from services.budget_manager import RequestBudgetManager
 from services.i18n import get_layout_direction, set_current_language, tr
-from services.windows_gadget import SingleInstanceController, WindowsStartupManager
+from services.windows_gadget import (
+    SingleInstanceController,
+    WindowsDesktopContextMenuManager,
+    WindowsStartupManager,
+)
 from storage.cache_store import CacheStore
 from ui.icon_loader import load_svg_icon
 from ui.main_window import MainWindow
@@ -41,6 +45,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Start minimized to the Windows system tray.",
     )
     parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove Chande per-user Windows startup and desktop context-menu registry entries.",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"{APP_NAME} {APP_VERSION}",
@@ -50,6 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.uninstall:
+        WindowsStartupManager.set_startup(False)
+        WindowsDesktopContextMenuManager.set_context_menu(False)
+        return 0
     _set_windows_app_user_model_id()
 
     app = QApplication(sys.argv)
@@ -73,8 +86,9 @@ def main(argv: list[str] | None = None) -> int:
     set_current_language(settings_manager.settings.language)
     app.setLayoutDirection(get_layout_direction(settings_manager.settings.language))
     app.setApplicationDisplayName(tr("app.name", lang=settings_manager.settings.language))
-    # Synchronize and self-heal Windows per-user sign-in startup registration
+    # Synchronize and self-heal Windows per-user sign-in startup and desktop context-menu registrations
     WindowsStartupManager.sync_on_startup(settings_manager.settings.start_with_windows)
+    WindowsDesktopContextMenuManager.sync_on_startup(settings_manager.settings.desktop_context_menu)
 
     cache_store = CacheStore()
     budget_manager = RequestBudgetManager()

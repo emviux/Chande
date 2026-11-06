@@ -34,6 +34,9 @@ WS_EX_LAYERED = 0x00080000
 WS_EX_APPWINDOW = 0x00040000
 WS_EX_NOACTIVATE = 0x08000000
 
+GW_HWNDFIRST = 0
+GW_HWNDLAST = 1
+GW_HWNDNEXT = 2
 GW_HWNDPREV = 3
 GW_OWNER = 4
 LWA_ALPHA = 0x00000002
@@ -97,6 +100,8 @@ class WINDOWPOS(ctypes.Structure):
     ]
 
 STARTUP_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+DESKTOP_CONTEXT_MENU_KEY = r"Software\Classes\DesktopBackground\Shell\Chande"
+DESKTOP_CONTEXT_MENU_COMMAND_KEY = r"Software\Classes\DesktopBackground\Shell\Chande\command"
 SINGLE_INSTANCE_SERVER_NAME = "ChandeDesktopGadget_IPC_v1"
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\ChandeDesktopGadget_Mutex_v1"
 
@@ -193,9 +198,123 @@ def find_desktop_shell_hwnds() -> Tuple[int, int]:
         return (0, 0)
 
 
+def _set_window_pos(
+    hwnd: int,
+    insert_after: int,
+    x: int = 0,
+    y: int = 0,
+    cx: int = 0,
+    cy: int = 0,
+    flags: int = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+) -> bool:
+    """Thin 32/64-bit safe wrapper around Win32 `SetWindowPos`."""
+    if not _is_windows() or not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    hwnd_param_type = ctypes.c_ssize_t if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        hwnd_param_type,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    return bool(
+        user32.SetWindowPos(
+            wintypes.HWND(hwnd),
+            hwnd_param_type(insert_after),
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+        )
+    )
+
+
+def place_gadget_on_desktop_layer(hwnd: int, force_above_shell: bool = False) -> bool:
+    """Place `hwnd` on the desktop layer: behind all normal application windows and above the desktop wallpaper/icons.
+
+    Key Win32 Desktop-Layer Architecture (Windows 10/11 compatible):
+    - We NEVER set `GWLP_HWNDPARENT` to `Progman`/`WorkerW` because Windows Explorer's Show Desktop
+      command (`MinimizeAll` / `ToggleDesktop`) minimizes or hides owned windows of `Progman`/`WorkerW`,
+      which previously caused Chande to vanish on Show Desktop until the user right-clicked the desktop.
+    - When `force_above_shell=True` or `is_desktop_shell_above_window(hwnd)` is True (i.e. Windows
+      Show Desktop has raised `WorkerW`/`Progman` to cover normal windows), we place `hwnd` immediately
+      above the raised desktop shell host (without setting `WS_EX_TOPMOST`) so Chande stays visible on
+      the desktop.
+    - Otherwise, if `hwnd` sits above any visible, non-minimized normal application window, we place
+      `hwnd` at `HWND_BOTTOM` (and if that pushes `hwnd` behind `Progman`/`WorkerW`, we place `hwnd`
+      immediately above `Progman`/`WorkerW` via `SetWindowPos(hwnd, prev_sibling_of_desktop, ...)`).
+    """
+    if not _is_windows() or not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetWindow.restype = wintypes.HWND
+
+        # 1. Strip WS_EX_TOPMOST if currently set so normal apps are never covered
+        if is_window_topmost(hwnd):
+            _set_window_pos(
+                hwnd,
+                HWND_NOTOPMOST,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+
+        # 2. Ensure GWLP_HWNDPARENT is 0 (unowned) so Show Desktop never hides/minimizes hwnd with Progman
+        try:
+            if _get_window_long_ptr(hwnd, GWLP_HWNDPARENT) != 0:
+                _set_window_long_ptr(hwnd, GWLP_HWNDPARENT, 0)
+        except Exception:
+            pass
+
+        # 3. If Show Desktop raised WorkerW/Progman above hwnd (or force_above_shell is requested),
+        #    place hwnd at the top of the non-topmost layer (above the raised WorkerW/Progman, never HWND_TOPMOST)
+        if force_above_shell or is_desktop_shell_above_window(hwnd):
+            return _set_window_pos(
+                hwnd,
+                HWND_TOP,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+
+        # 4. Standard desktop-gadget state: sit behind all normal/maximized apps, immediately above Progman/WorkerW
+        _set_window_pos(
+            hwnd,
+            HWND_BOTTOM,
+            flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+
+        # If HWND_BOTTOM placed hwnd behind the desktop wallpaper/icons (Progman/WorkerW),
+        # move hwnd immediately above desktop_host (insert after the window right above desktop_host)
+        desktop_host, _ = find_desktop_shell_hwnds()
+        if desktop_host and desktop_host != int(hwnd) and is_desktop_shell_above_window(hwnd):
+            prev_above_desktop = int(
+                user32.GetWindow(wintypes.HWND(desktop_host), GW_HWNDPREV) or 0
+            )
+            if prev_above_desktop and prev_above_desktop != int(hwnd):
+                _set_window_pos(
+                    hwnd,
+                    prev_above_desktop,
+                    flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            else:
+                _set_window_pos(
+                    hwnd,
+                    HWND_TOP,
+                    flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+        return True
+    except Exception:
+        return False
+
+
 def apply_desktop_gadget_style(
     hwnd: int,
-    always_on_top: bool = True,
+    always_on_top: bool = False,
     no_activate: bool = True,
     force_topmost_over_desktop: bool = False,
 ) -> bool:
@@ -209,12 +328,9 @@ def apply_desktop_gadget_style(
       gadget does not steal focus from the active foreground application.
     - Sets `DWMWA_EXCLUDED_FROM_PEEK=1` and `DWMWA_TRANSITIONS_FORCEDISABLED=1` so
       `Win+D` / Aero Peek / Show Desktop does not hide or animate-minimize the gadget.
-    - When `always_on_top=False` (and not temporarily above Show Desktop), binds
-      `GWLP_HWNDPARENT` to the top-level desktop host (`Progman` / `WorkerW`) so
-      clicking Show Desktop raises the gadget along with the desktop.
-    - Applies `HWND_TOPMOST` (when `always_on_top=True` or `force_topmost_over_desktop=True`)
-      with `SWP_NOACTIVATE` so the gadget stays visible above normal, maximized, and
-      Show Desktop `WorkerW` windows without stealing focus.
+    - Keeps `GWLP_HWNDPARENT=0` (unowned) so Windows Explorer never hides the gadget as an
+      owned window of `Progman`/`WorkerW` during Show Desktop, and places the window on the
+      desktop layer (`place_gadget_on_desktop_layer`) behind normal application windows.
     """
     if not _is_windows() or not hwnd:
         return False
@@ -238,21 +354,11 @@ def apply_desktop_gadget_style(
 
         _set_window_long_ptr(hwnd, GWL_EXSTYLE, ex_style)
 
-        # 3. Manage desktop owner relationship:
-        # - When always_on_top is True, keep GWLP_HWNDPARENT=0 so WorkerW dropping to HWND_BOTTOM
-        #   never strips WS_EX_TOPMOST from the gadget.
-        # - When always_on_top is False (and not forced topmost), bind GWLP_HWNDPARENT to the
-        #   top-level desktop host (Progman/WorkerW) so Show Desktop raises it with the desktop.
-        use_topmost = bool(always_on_top or force_topmost_over_desktop)
+        # 3. Always keep GWLP_HWNDPARENT=0 so Show Desktop never minimizes/hides hwnd as an owned shell window
         try:
             cur_owner = _get_window_long_ptr(hwnd, GWLP_HWNDPARENT)
-            if use_topmost:
-                if cur_owner != 0:
-                    _set_window_long_ptr(hwnd, GWLP_HWNDPARENT, 0)
-            else:
-                desktop_host, _ = find_desktop_shell_hwnds()
-                if desktop_host and desktop_host != int(hwnd) and cur_owner != desktop_host:
-                    _set_window_long_ptr(hwnd, GWLP_HWNDPARENT, desktop_host)
+            if cur_owner != 0:
+                _set_window_long_ptr(hwnd, GWLP_HWNDPARENT, 0)
         except Exception:
             pass
 
@@ -276,63 +382,41 @@ def apply_desktop_gadget_style(
             pass
 
         # 5. Apply Z-order and frame change without activating/stealing focus
-        user32 = ctypes.windll.user32
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND,
-            wintypes.HWND,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-
-        insert_after = HWND_TOPMOST if use_topmost else HWND_NOTOPMOST
-        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED
-        user32.SetWindowPos(
-            wintypes.HWND(hwnd),
-            wintypes.HWND(insert_after),
-            0,
-            0,
-            0,
-            0,
-            flags,
-        )
+        use_topmost = bool(always_on_top)
+        if use_topmost:
+            _set_window_pos(
+                hwnd,
+                HWND_TOPMOST,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        else:
+            _set_window_pos(
+                hwnd,
+                HWND_NOTOPMOST,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+            place_gadget_on_desktop_layer(hwnd, force_above_shell=force_topmost_over_desktop)
         return True
     except Exception:
         return False
 
 
-def raise_gadget_without_focus(hwnd: int, always_on_top: bool = True) -> bool:
-    """Bring the gadget to the top of its Z-order layer without stealing foreground focus."""
+def raise_gadget_without_focus(hwnd: int, always_on_top: bool = False) -> bool:
+    """Position the gadget in its appropriate Z-order layer without stealing foreground focus.
+
+    When `always_on_top=False` (default desktop-gadget mode), places the gadget on the desktop
+    layer (behind normal application windows and above the desktop surface).
+    """
     if not _is_windows() or not hwnd:
         return False
     try:
-        user32 = ctypes.windll.user32
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND,
-            wintypes.HWND,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-        insert_after = HWND_TOPMOST if always_on_top else HWND_TOP
-        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        return bool(
-            user32.SetWindowPos(
-                wintypes.HWND(hwnd),
-                wintypes.HWND(insert_after),
-                0,
-                0,
-                0,
-                0,
-                flags,
+        if always_on_top:
+            return _set_window_pos(
+                hwnd,
+                HWND_TOPMOST,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
-        )
+        return place_gadget_on_desktop_layer(hwnd)
     except Exception:
         return False
 
@@ -636,13 +720,34 @@ def is_desktop_shell_above_window(hwnd: int) -> bool:
     return False
 
 
+def is_window_behind_other_window(gadget_hwnd: int, app_hwnd: int) -> bool:
+    """Return True if `app_hwnd` is above `gadget_hwnd` in the Win32 Z-order (`gadget_hwnd` is behind `app_hwnd`)."""
+    if not _is_windows() or not gadget_hwnd or not app_hwnd or int(gadget_hwnd) == int(app_hwnd):
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetWindow.restype = wintypes.HWND
+
+        curr = user32.GetWindow(wintypes.HWND(gadget_hwnd), GW_HWNDPREV)
+        steps = 0
+        while curr and steps < 500:
+            steps += 1
+            if int(curr) == int(app_hwnd):
+                return True
+            curr = user32.GetWindow(curr, GW_HWNDPREV)
+    except Exception:
+        pass
+    return False
+
+
 def ensure_gadget_visible_on_desktop(
     hwnd: int,
-    always_on_top: bool = True,
+    always_on_top: bool = False,
     force_topmost_over_desktop: bool = False,
 ) -> bool:
     """Ensure `hwnd` remains visible on the desktop (never minimized or covered by Show Desktop `WorkerW`)
-    without stealing foreground focus or altering position/size.
+    while staying behind normal application windows when `always_on_top=False`.
     """
     if not _is_windows() or not hwnd:
         return False
@@ -654,47 +759,30 @@ def ensure_gadget_visible_on_desktop(
         if user32.IsIconic(h) or not user32.IsWindowVisible(h):
             user32.ShowWindow(h, SW_SHOWNOACTIVATE)
 
-        # 2. If Show Desktop raised WorkerW/Progman above hwnd, we must place hwnd at top of HWND_TOPMOST
-        shell_above = is_desktop_shell_above_window(hwnd)
-        use_topmost = bool(always_on_top or force_topmost_over_desktop or shell_above)
+        # 2. Check if Show Desktop raised WorkerW/Progman above hwnd
+        shell_above = is_desktop_shell_above_window(hwnd) or force_topmost_over_desktop
 
         apply_desktop_gadget_style(
             hwnd,
             always_on_top=always_on_top,
             no_activate=True,
-            force_topmost_over_desktop=use_topmost,
+            force_topmost_over_desktop=shell_above,
         )
 
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND,
-            wintypes.HWND,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-        insert_after = HWND_TOPMOST if use_topmost else HWND_TOP
-        flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        return bool(
-            user32.SetWindowPos(
-                h,
-                wintypes.HWND(insert_after),
-                0,
-                0,
-                0,
-                0,
-                flags,
+        if always_on_top:
+            return _set_window_pos(
+                hwnd,
+                HWND_TOPMOST,
+                flags=SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )
-        )
+        return place_gadget_on_desktop_layer(hwnd, force_above_shell=shell_above)
     except Exception:
         return False
 
 
 class DesktopShellEventMonitor(QObject):
     """Event-driven Win32 shell monitor (`SetWinEventHook`) that detects Windows 'Show Desktop'
-    and 'Minimize All' transitions without aggressive polling timers.
+    and normal window activations without aggressive polling timers.
     """
 
     show_desktop_detected = Signal()
@@ -741,7 +829,7 @@ class DesktopShellEventMonitor(QObject):
             for ev_min, ev_max in (
                 (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
                 (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
-                (EVENT_OBJECT_REORDER, EVENT_OBJECT_FOCUS),
+                (EVENT_OBJECT_SHOW, EVENT_OBJECT_FOCUS),
             ):
                 h = int(
                     user32.SetWinEventHook(
@@ -791,18 +879,27 @@ class DesktopShellEventMonitor(QObject):
             return
 
         if event == EVENT_SYSTEM_MINIMIZESTART:
-            self.show_desktop_detected.emit()
+            # When normal windows minimize (e.g., Show Desktop / Minimize All), check if the desktop
+            # shell is now active or raised above target_hwnd
+            if is_desktop_shell_above_window(target_hwnd):
+                self.show_desktop_detected.emit()
             return
 
-        if event in (EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS):
+        if event == EVENT_SYSTEM_MINIMIZEEND:
+            if hwnd_int and not is_desktop_shell_window(hwnd_int):
+                self.normal_window_activated.emit(hwnd_int)
+            return
+
+        if event in (EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_OBJECT_SHOW):
             if hwnd_int and is_desktop_shell_window(hwnd_int):
                 self.show_desktop_detected.emit()
                 return
             if is_desktop_shell_above_window(target_hwnd):
                 self.show_desktop_detected.emit()
                 return
-            if event == EVENT_SYSTEM_FOREGROUND and hwnd_int:
-                self.normal_window_activated.emit(hwnd_int)
+            if event in (EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_SHOW) and hwnd_int:
+                if not is_desktop_shell_window(hwnd_int):
+                    self.normal_window_activated.emit(hwnd_int)
             return
 
         if event == EVENT_OBJECT_REORDER:
@@ -997,6 +1094,151 @@ class WindowsStartupManager:
         else:
             # If disabled in settings, ensure no stale registry entry remains
             return cls.set_startup(False)
+
+
+# --- Windows Desktop Right-Click Context Menu Registration ---
+
+
+class WindowsDesktopContextMenuManager:
+    """Manages per-user Windows Desktop background right-click context menu ('Chande') without admin rights.
+
+    Registry structure under `HKEY_CURRENT_USER` (no elevation required):
+    - `Software\\Classes\\DesktopBackground\\Shell\\Chande`
+      - `(Default)` = `"Chande"`
+      - `MUIVerb`   = `"Chande"`
+      - `Icon`      = `"C:\\Path\\To\\assets\\icons\\chande.ico"` (or `"C:\\Path\\To\\Chande.exe,0"`)
+    - `Software\\Classes\\DesktopBackground\\Shell\\Chande\\command`
+      - `(Default)` = `"\"C:\\Path\\To\\Chande.exe\""` (or `"\"C:\\...\\pythonw.exe\" \"C:\\...\\main.py\""`)
+    """
+
+    MENU_DISPLAY_NAME = "Chande"
+
+    @classmethod
+    def resolve_command_and_icon(cls) -> Tuple[str, Path, str]:
+        """Return `(command_string, target_executable_path, icon_string)` for the desktop context menu."""
+        cmd, target_exe = WindowsStartupManager.resolve_preferred_startup_command()
+        ico_candidates = [
+            target_exe.resolve().parent / "_internal" / "assets" / "icons" / "chande.ico",
+            target_exe.resolve().parent / "assets" / "icons" / "chande.ico",
+            (ROOT_DIR / "assets" / "icons" / "chande.ico").resolve(),
+        ]
+        resolved_ico = next((p.resolve() for p in ico_candidates if p.is_file()), None)
+        if resolved_ico is not None:
+            icon_str = f'"{resolved_ico}"'
+        elif target_exe.name.lower() == f"{APP_NAME.lower()}.exe" and target_exe.is_file():
+            icon_str = f'"{target_exe.resolve()}",0'
+        else:
+            icon_str = f'"{target_exe.resolve()}",0'
+        return cmd, target_exe, icon_str
+
+    @classmethod
+    def get_registered_command(cls, base_key: str = DESKTOP_CONTEXT_MENU_KEY) -> Optional[str]:
+        """Read the registered command string from `HKCU\\...\\Shell\\Chande\\command`, or None."""
+        if not _is_windows():
+            return None
+        cmd_subkey = f"{base_key}\\command"
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, cmd_subkey, 0, winreg.KEY_READ
+            ) as reg_key:
+                val, _ = winreg.QueryValueEx(reg_key, "")
+                return str(val) if val else None
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
+
+    @classmethod
+    def get_registered_verb_info(cls, base_key: str = DESKTOP_CONTEXT_MENU_KEY) -> Tuple[Optional[str], Optional[str]]:
+        """Return `(display_name, icon_value)` from `HKCU\\...\\Shell\\Chande`."""
+        if not _is_windows():
+            return (None, None)
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, base_key, 0, winreg.KEY_READ
+            ) as reg_key:
+                try:
+                    label, _ = winreg.QueryValueEx(reg_key, "")
+                except FileNotFoundError:
+                    label = None
+                try:
+                    icon, _ = winreg.QueryValueEx(reg_key, "Icon")
+                except FileNotFoundError:
+                    icon = None
+                return (str(label) if label else None, str(icon) if icon else None)
+        except FileNotFoundError:
+            return (None, None)
+        except OSError:
+            return (None, None)
+
+    @classmethod
+    def is_registered_and_valid(cls, base_key: str = DESKTOP_CONTEXT_MENU_KEY) -> bool:
+        """Return True if the desktop context-menu entry exists AND its target executable exists on disk."""
+        cmd = cls.get_registered_command(base_key=base_key)
+        if not cmd:
+            return False
+        target = WindowsStartupManager._extract_primary_path_from_command(cmd)
+        if target is None or not target.is_file():
+            return False
+        return True
+
+    @classmethod
+    def set_context_menu(
+        cls,
+        enable: bool,
+        base_key: str = DESKTOP_CONTEXT_MENU_KEY,
+    ) -> Tuple[bool, str]:
+        """Enable or disable the 'Run Chande' desktop right-click menu entry in HKCU.
+
+        Returns `(success, error_message)`. When `enable=False`, removes only Chande's own keys.
+        """
+        if not _is_windows():
+            return (False, "Windows Registry is only available on Windows.")
+        cmd_subkey = f"{base_key}\\command"
+        try:
+            import winreg
+            if enable:
+                cmd, target_exe, icon_str = cls.resolve_command_and_icon()
+                if not target_exe.is_file():
+                    return (False, f"Target executable not found: {target_exe}")
+                with winreg.CreateKeyEx(
+                    winreg.HKEY_CURRENT_USER, base_key, 0, winreg.KEY_SET_VALUE
+                ) as shell_key:
+                    winreg.SetValueEx(shell_key, "", 0, winreg.REG_SZ, cls.MENU_DISPLAY_NAME)
+                    winreg.SetValueEx(shell_key, "MUIVerb", 0, winreg.REG_SZ, cls.MENU_DISPLAY_NAME)
+                    winreg.SetValueEx(shell_key, "Icon", 0, winreg.REG_SZ, icon_str)
+                with winreg.CreateKeyEx(
+                    winreg.HKEY_CURRENT_USER, cmd_subkey, 0, winreg.KEY_SET_VALUE
+                ) as command_key:
+                    winreg.SetValueEx(command_key, "", 0, winreg.REG_SZ, cmd)
+                return (True, "")
+            else:
+                # Remove only Chande's subkeys (`...\Chande\command` then `...\Chande`)
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, cmd_subkey)
+                except FileNotFoundError:
+                    pass
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, base_key)
+                except FileNotFoundError:
+                    pass
+                return (True, "")
+        except OSError as exc:
+            return (False, str(exc))
+
+    @classmethod
+    def sync_on_startup(
+        cls,
+        desired_enabled: bool,
+        base_key: str = DESKTOP_CONTEXT_MENU_KEY,
+    ) -> bool:
+        """Ensure the HKCU desktop context menu matches `desired_enabled` and self-heals if the exe moved."""
+        if not _is_windows():
+            return False
+        ok, _ = cls.set_context_menu(desired_enabled, base_key=base_key)
+        return ok
 
 
 # --- Single-Instance Protection & IPC Activation ---

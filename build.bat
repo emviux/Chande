@@ -5,7 +5,7 @@ cd /d "%~dp0"
 echo Stopping any running Chande.exe instance before build...
 taskkill /F /IM Chande.exe >nul 2>&1
 echo Building Chande Windows Desktop Gadget (windowed GUI, no console)...
-python -m PyInstaller --noconfirm --onedir --windowed --noconsole --name Chande --add-data "VERSION;." --add-data "assets;assets" --add-data "translations;translations" main.py
+python -m PyInstaller --noconfirm --onedir --windowed --noconsole --name Chande --icon "assets\icons\chande.ico" --add-data "VERSION;." --add-data "assets;assets" --add-data "translations;translations" main.py
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] PyInstaller build failed.
     exit /b %ERRORLEVEL%

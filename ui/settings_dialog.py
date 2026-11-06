@@ -238,10 +238,17 @@ class SettingsDialog(QDialog):
 
         checks_row1 = QHBoxLayout()
         self.always_on_top_cb = QCheckBox()
+        self.always_on_top_cb.setVisible(False)
         self.start_windows_cb = QCheckBox()
+        self.desktop_context_menu_cb = QCheckBox()
         checks_row1.addWidget(self.always_on_top_cb)
         checks_row1.addWidget(self.start_windows_cb)
+        checks_row1.addWidget(self.desktop_context_menu_cb)
         ui_layout.addLayout(checks_row1)
+
+        self.desktop_context_menu_status_label = QLabel("")
+        self.desktop_context_menu_status_label.setWordWrap(True)
+        ui_layout.addWidget(self.desktop_context_menu_status_label)
 
         checks_row2 = QHBoxLayout()
         self.show_chart_cb = QCheckBox()
@@ -493,8 +500,10 @@ class SettingsDialog(QDialog):
         # Checkboxes
         self.always_on_top_cb.setText(tr("settings.always_on_top_cb", lang=norm_lang))
         self.start_windows_cb.setText(tr("settings.start_windows_cb", lang=norm_lang))
+        self.desktop_context_menu_cb.setText(tr("settings.desktop_context_menu_cb", lang=norm_lang))
         self.show_chart_cb.setText(tr("settings.show_chart_cb", lang=norm_lang))
         self.show_secondary_cb.setText(tr("settings.show_secondary_cb", lang=norm_lang))
+        self.refresh_desktop_context_menu_status()
 
         # Stats & action buttons
         self.disclaimer_label.setText(tr("settings.disclaimer", lang=norm_lang))
@@ -588,8 +597,10 @@ class SettingsDialog(QDialog):
 
             self.always_on_top_cb.setChecked(s.always_on_top)
             self.start_windows_cb.setChecked(s.start_with_windows)
+            self.desktop_context_menu_cb.setChecked(s.desktop_context_menu)
             self.show_chart_cb.setChecked(s.show_chart)
             self.show_secondary_cb.setChecked(s.show_secondary_cards)
+            self.refresh_desktop_context_menu_status()
 
             self.github_repo_input.setText(s.get_effective_github_repo())
             self.auto_check_updates_cb.setChecked(s.auto_check_updates)
@@ -599,6 +610,21 @@ class SettingsDialog(QDialog):
                 self.update_channel_combo.setCurrentIndex(idx_chan)
         finally:
             self._loading_settings = False
+
+    def refresh_desktop_context_menu_status(self) -> None:
+        """Update the installation status label for the Windows Desktop 'Run Chande' context menu."""
+        if not hasattr(self, "desktop_context_menu_status_label"):
+            return
+        lang = self.active_language
+        from services.windows_gadget import WindowsDesktopContextMenuManager
+        if WindowsDesktopContextMenuManager.is_registered_and_valid():
+            self.desktop_context_menu_status_label.setText(
+                tr("settings.desktop_context_menu_status_installed", lang=lang)
+            )
+        else:
+            self.desktop_context_menu_status_label.setText(
+                tr("settings.desktop_context_menu_status_not_installed", lang=lang)
+            )
 
     def _update_masked_key_hint(self, effective_key: str) -> None:
         lang = self.active_language
@@ -1009,6 +1035,7 @@ class SettingsDialog(QDialog):
             opacity=round(self.opacity_slider.value() / 100.0, 2),
             always_on_top=self.always_on_top_cb.isChecked(),
             start_with_windows=self.start_windows_cb.isChecked(),
+            desktop_context_menu=self.desktop_context_menu_cb.isChecked(),
             use_persian_numerals=bool(self.numerals_combo.currentData()),
             confirm_manual_refresh=self.confirm_manual_cb.isChecked(),
             display_mode=chosen_mode,
@@ -1028,6 +1055,15 @@ class SettingsDialog(QDialog):
         new_settings.validate_and_clamp()
         self.settings_manager.save(new_settings)
         SettingsManager.apply_windows_startup(new_settings.start_with_windows)
+        ok_ctx, err_ctx = SettingsManager.apply_desktop_context_menu(new_settings.desktop_context_menu)
+        self.refresh_desktop_context_menu_status()
+        if not ok_ctx and err_ctx:
+            lang = new_settings.language
+            QMessageBox.warning(
+                self,
+                tr("settings.desktop_context_menu_error_title", lang=lang),
+                tr("settings.desktop_context_menu_error_body", lang=lang, detail=err_ctx),
+            )
         self.settings_saved.emit(new_settings)
         self.accept()
 
@@ -1114,6 +1150,9 @@ class SettingsDialog(QDialog):
             """
         )
         self.disclaimer_label.setStyleSheet(
+            f"color: {pal.text_secondary}; font-size: 11px;"
+        )
+        self.desktop_context_menu_status_label.setStyleSheet(
             f"color: {pal.text_secondary}; font-size: 11px;"
         )
         self.masked_key_hint.setStyleSheet(

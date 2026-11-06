@@ -29,7 +29,7 @@
 Most users **do not need Python or programming tools**. You can run Chande directly from the portable Windows release package:
 
 1. **Download the Release ZIP:**
-   Go to the repository's **Releases** page and download the latest **`Chande-v1.3.1-Windows-x64.zip`**.
+   Go to the repository's **Releases** page and download the latest **`Chande-v1.4.0-Windows-x64.zip`**.
 2. **Extract the Folder:**
    Right-click the downloaded `.zip` file, click **Extract All...**, and extract it to a permanent folder (for example, `C:\Users\<YourName>\Apps\Chande`).
 3. **Run Chande:**
@@ -49,7 +49,7 @@ Most users **do not need Python or programming tools**. You can run Chande direc
 برای استفاده از **چنده (Chande)** نیازی به نصب پایتون یا ابزارهای برنامه‌نویسی ندارید:
 
 ۱. **دانلود نسخه آماده ویندوز:**
-   به بخش **Releases** در مخزن گیت‌هاب بروید و آخرین فایل **`Chande-v1.3.1-Windows-x64.zip`** را دانلود کنید.
+   به بخش **Releases** در مخزن گیت‌هاب بروید و آخرین فایل **`Chande-v1.4.0-Windows-x64.zip`** را دانلود کنید.
 ۲. **استخراج فایل فشرده (Extract):**
    روی فایل ZIP راست‌کلیک کرده و گزینه **Extract All...** را بزنید تا محتویات آن در یک پوشه دائمی (مثلاً روی دسکتاپ یا پوشه برنامه‌هایتان) استخراج شود.
 ۳. **اجرای برنامه:**
@@ -72,7 +72,8 @@ Most users **do not need Python or programming tools**. You can run Chande direc
 - Optional secondary cards (`sekee`, `eur`, `gbp`, `aed`) toggled anytime in Settings.
 
 ### 2. Classic Windows 7 Desktop Gadget Behavior (رفتار مشابه گجت‌های ویندوز ۷)
-- **Always Visible, Never Intrusive:** Remains visible above normal and maximized desktop applications without stealing keyboard focus (`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`).
+- **Desktop-Layer Placement, Never Intrusive:** Sits on the Windows desktop layer behind normal, maximized, and full-screen applications while remaining visible whenever you return to the desktop or click **Show Desktop** (`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, `DWMWA_EXCLUDED_FROM_PEEK`).
+- **Windows Desktop Right-Click Integration (`Chande`):** Right-click any empty area of the Windows desktop and click **Chande** to launch Chande (or restore it if hidden in the system tray) without opening a console or creating duplicate processes.
 - **Excluded from Alt+Tab & Taskbar:** Keeps your taskbar and `Alt+Tab` switcher completely clean.
 - **Exact Position & Size Memory:** Drag from any empty area to position on any monitor; Chande remembers and restores your exact coordinates (`window_x`, `window_y`) and dimensions across restarts.
 - **Multi-Monitor & Resolution Safe:** Automatically clamps off-screen coordinates back into the visible desktop work area if a monitor is disconnected.

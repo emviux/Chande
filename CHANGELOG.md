@@ -8,6 +8,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.4.0] - 2026-11-06
+
+### Added / قابلیت‌های جدید
+- **Windows Desktop Right-Click Context Menu Integration (`Chande`)**:
+  - Added **Chande** (with the official gold-coin icon `assets/icons/chande.ico`) to the native Windows desktop background right-click context menu under `HKEY_CURRENT_USER\Software\Classes\DesktopBackground\Shell\Chande` without requiring administrator privileges.
+  - Clicking **Chande** from the desktop right-click menu launches Chande cleanly (windowed GUI, no CMD/PowerShell console), restores the widget if hidden in the system tray, or leaves the existing desktop widget untouched if already visible.
+  - Added **Add 'Chande' to Desktop Context Menu** (`افزودن گزینه «Chande» به منوی راست‌کلیک دسکتاپ`) toggle and live installation status indicator under **Settings > General**, plus automatic startup path self-healing and `--uninstall` cleanup.
+
+### Fixed / رفع باگ‌ها
+- **Fixed Windows Show Desktop Z-Order & Desktop Layering**:
+  - Fixed an issue where clicking the Windows **Show Desktop** button (`Win+D` / bottom-right taskbar corner) caused Explorer's raised `WorkerW`/`Progman` container to cover or hide Chande until the user right-clicked on the desktop.
+  - Kept Chande's native `HWND` unowned (`GWLP_HWNDPARENT = 0`) and positioned it above the raised `WorkerW`/`Progman` desktop shell during Show Desktop while keeping it on the desktop layer (`HWND_BOTTOM`) behind all normal, maximized, and full-screen application windows during normal operation.
+
+---
+
 ## [1.3.1] - 2026-11-05
 
 ### Added / Improved

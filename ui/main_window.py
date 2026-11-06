@@ -69,6 +69,8 @@ from services.i18n import (
 from services.power_state import WidgetOperatingState, WidgetStateManager
 from storage.cache_store import CacheStore
 from services.windows_gadget import (
+    HWND_BOTTOM,
+    HWND_TOP,
     HWND_TOPMOST,
     SC_MINIMIZE,
     SWP_HIDEWINDOW,
@@ -88,6 +90,7 @@ from services.windows_gadget import (
     ensure_gadget_visible_on_desktop,
     is_desktop_shell_above_window,
     is_window_obscured,
+    place_gadget_on_desktop_layer,
     raise_gadget_without_focus,
 )
 from ui.icon_loader import load_svg_icon, load_svg_pixmap
@@ -365,8 +368,6 @@ class MainWindow(QMainWindow):
         self.setLayoutDirection(get_layout_direction(lang))
 
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
-        if self.settings_manager.settings.always_on_top:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -393,13 +394,13 @@ class MainWindow(QMainWindow):
                 self.power_manager.evaluate_now()
 
     def _apply_native_gadget_behavior(self) -> None:
-        """Apply native Win32 extended styles (WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, HWND_TOPMOST)."""
+        """Apply native Win32 extended styles (WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, desktop-layer Z-order)."""
         hwnd = self._safe_hwnd()
         if not hwnd:
             return
         apply_desktop_gadget_style(
             hwnd,
-            always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
+            always_on_top=False,
             no_activate=True,
         )
 
@@ -407,22 +408,20 @@ class MainWindow(QMainWindow):
         """Handle Windows Show Desktop / Win+D shell events immediately without stealing focus."""
         if self._explicitly_hidden or self._is_quitting:
             return
-        self._keep_above_show_desktop = True
         self._restore_after_show_desktop()
 
     def _on_normal_window_activated(self, _foreground_hwnd: int) -> None:
-        """When a normal app window is activated after Show Desktop, restore non-topmost mode if unpinned."""
+        """When a normal app window is activated or restored, ensure the gadget stays on the desktop layer."""
         if self._explicitly_hidden or self._is_quitting:
             return
-        if self._keep_above_show_desktop and not self.settings_manager.settings.always_on_top:
-            self._keep_above_show_desktop = False
-            hwnd = self._safe_hwnd()
-            if hwnd:
-                raise_gadget_without_focus(hwnd, always_on_top=False)
+        self._keep_above_show_desktop = False
+        hwnd = self._safe_hwnd()
+        if hwnd:
+            place_gadget_on_desktop_layer(hwnd)
         self.power_manager.evaluate_now()
 
     def _restore_after_show_desktop(self) -> None:
-        """Keep the gadget visible in place above the raised WorkerW desktop surface during Show Desktop."""
+        """Keep the gadget visible in place above the desktop surface during Show Desktop."""
         if self._explicitly_hidden or self._is_quitting:
             return
         hwnd = self._safe_hwnd()
@@ -436,9 +435,10 @@ class MainWindow(QMainWindow):
                     (self.windowState() & ~Qt.WindowState.WindowMinimized)
                     | Qt.WindowState.WindowNoState
                 )
+            self._keep_above_show_desktop = bool(is_desktop_shell_above_window(hwnd))
             ensure_gadget_visible_on_desktop(
                 hwnd,
-                always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
+                always_on_top=False,
             )
             if not self.isVisible():
                 self.showNormal()
@@ -451,7 +451,9 @@ class MainWindow(QMainWindow):
         self.power_manager.evaluate_now()
 
     def nativeEvent(self, eventType: object, message: object) -> Tuple[bool, int]:
-        """Intercept Win32 shell window-management messages so Show Desktop never hides or minimizes Chande."""
+        """Intercept Win32 shell window-management messages so Show Desktop never hides or minimizes Chande,
+        and normal application windows always stay above Chande.
+        """
         if sys.platform == "win32" and not self._explicitly_hidden and not self._is_quitting:
             try:
                 msg_addr = int(message)  # type: ignore[arg-type]
@@ -479,11 +481,18 @@ class MainWindow(QMainWindow):
                             wp.cx < self.MIN_WINDOW_SIZE.width() or wp.cy < self.MIN_WINDOW_SIZE.height()
                         ):
                             wp.flags |= SWP_NOSIZE
-                        # Prevent shell from demoting Z-order during Show Desktop or when pinned
-                        if self.settings_manager.settings.always_on_top or self._keep_above_show_desktop:
-                            if not (wp.flags & SWP_NOZORDER):
-                                if wp.hwndInsertAfter not in (HWND_TOPMOST, 0xFFFFFFFFFFFFFFFF, -1):
-                                    wp.hwndInsertAfter = HWND_TOPMOST
+                        # Prevent Windows from promoting Chande to HWND_TOP (0) or HWND_TOPMOST (-1)
+                        # above normal application windows.
+                        if not (wp.flags & SWP_NOZORDER):
+                            hwnd = int(msg.hWnd or 0)
+                            if (
+                                (
+                                    wp.hwndInsertAfter is None
+                                    or int(wp.hwndInsertAfter or 0) in (HWND_TOP, HWND_TOPMOST, 0xFFFFFFFFFFFFFFFF, -1)
+                                )
+                                and not is_desktop_shell_above_window(hwnd)
+                            ):
+                                wp.hwndInsertAfter = HWND_BOTTOM
                     elif m == WM_WINDOWPOSCHANGED:
                         hwnd = int(msg.hWnd or 0)
                         if hwnd and self.isVisible() and is_desktop_shell_above_window(hwnd):
@@ -547,6 +556,7 @@ class MainWindow(QMainWindow):
 
         self.pin_btn = self._create_header_button("pin.svg", tr("header.pin_tooltip", lang=lang))
         self.pin_btn.setCheckable(True)
+        self.pin_btn.setVisible(False)
         self.pin_btn.clicked.connect(self.toggle_always_on_top)
         self._header_layout.addWidget(self.pin_btn)
 
@@ -574,6 +584,7 @@ class MainWindow(QMainWindow):
 
         self.overflow_pin_action = QAction(tr("menu.always_on_top", lang=lang), self)
         self.overflow_pin_action.setCheckable(True)
+        self.overflow_pin_action.setVisible(False)
         self.overflow_pin_action.triggered.connect(self._on_overflow_pin_toggled)
         self.overflow_menu.addAction(self.overflow_pin_action)
 
@@ -800,7 +811,7 @@ class MainWindow(QMainWindow):
             self.show_gadget_without_focus()
 
     def show_gadget_without_focus(self) -> None:
-        """Show and raise the desktop gadget above normal windows without stealing active focus."""
+        """Show the desktop gadget on the desktop layer (or topmost if pinned) without stealing active focus."""
         self._explicitly_hidden = False
         s = self.settings_manager.settings
         target_x = s.window_x if s.window_x is not None else self.x()
@@ -824,7 +835,7 @@ class MainWindow(QMainWindow):
             try:
                 raise_gadget_without_focus(
                     int(self.winId()),
-                    always_on_top=self.settings_manager.settings.always_on_top or self._keep_above_show_desktop,
+                    always_on_top=False,
                 )
             except Exception:
                 pass
@@ -839,19 +850,16 @@ class MainWindow(QMainWindow):
         self._sync_geometry_in_memory()
 
     def on_second_instance_activated(self) -> None:
-        """Handle second-launch notification: show existing gadget without calling API."""
-        self.show_gadget_without_focus()
-        lang = self.settings_manager.settings.language
-        if getattr(self, "tray_icon", None) is not None and self.tray_icon.isVisible():
-            try:
-                self.tray_icon.showMessage(
-                    tr("app.name", lang=lang),
-                    tr("app.already_running", lang=lang),
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2500,
-                )
-            except Exception:
-                pass
+        """Handle second-launch notification (e.g. from desktop 'Run Chande' context menu):
+        if already visible, keep it in place on the desktop layer; if hidden/minimized, restore it.
+        Never creates a duplicate instance or triggers an API request.
+        """
+        if not self.isVisible() or self.isMinimized() or self._explicitly_hidden:
+            self.show_gadget_without_focus()
+        else:
+            hwnd = self._safe_hwnd()
+            if hwnd:
+                place_gadget_on_desktop_layer(hwnd)
 
     # --- Multi-Monitor & Resolution Clamping ---
 
@@ -1066,7 +1074,7 @@ class MainWindow(QMainWindow):
             btn_sz, icon_sz = 30, 17
             self.refresh_btn.setVisible(True)
             self.mode_btn.setVisible(True)
-            self.pin_btn.setVisible(True)
+            self.pin_btn.setVisible(False)
             self.settings_btn.setVisible(True)
             self.overflow_btn.setVisible(False)
             self.close_btn.setVisible(True)
@@ -1834,10 +1842,10 @@ class MainWindow(QMainWindow):
         self._on_toggle_chart_clicked()
 
     def toggle_always_on_top(self) -> None:
-        """Toggle Always-on-Top window flag without calling the API."""
-        new_val = self.pin_btn.isChecked()
-        self.overflow_pin_action.setChecked(new_val)
-        self.settings_manager.update(always_on_top=new_val)
+        """Ensure desktop-gadget layering (behind normal windows, above desktop) without calling the API."""
+        self.pin_btn.setChecked(False)
+        self.overflow_pin_action.setChecked(False)
+        self.settings_manager.update(always_on_top=False)
         was_visible = self.isVisible()
         saved_pos = self.pos()
         saved_size = self.size()

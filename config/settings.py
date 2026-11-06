@@ -110,8 +110,9 @@ class AppSettings:
     language: str = DEFAULT_LANGUAGE  # "fa" (Persian) or "en" (English)
     theme: str = "dark"  # "dark" or "light"
     opacity: float = 0.96
-    always_on_top: bool = True
+    always_on_top: bool = False
     start_with_windows: bool = True
+    desktop_context_menu: bool = True
     use_persian_numerals: Optional[bool] = None  # Defaults to True for "fa", False for "en"
     confirm_manual_refresh: bool = True
     display_mode: str = "expanded"  # "expanded", "compact", or "ultra_compact"
@@ -146,6 +147,9 @@ class AppSettings:
         except (TypeError, ValueError):
             op = 0.96
         self.opacity = max(0.35, min(1.0, op))
+        self.always_on_top = False
+        self.start_with_windows = bool(self.start_with_windows)
+        self.desktop_context_menu = bool(self.desktop_context_menu)
 
         lang_norm = str(self.language or DEFAULT_LANGUAGE).strip().lower()
         if lang_norm not in SUPPORTED_LANGUAGES:
@@ -272,3 +276,9 @@ class SettingsManager:
         """Configure or remove the current user's Windows Run registry entry."""
         from services.windows_gadget import WindowsStartupManager
         return WindowsStartupManager.set_startup(enable)
+
+    @staticmethod
+    def apply_desktop_context_menu(enable: bool) -> Tuple[bool, str]:
+        """Configure or remove the current user's Windows Desktop right-click 'Run Chande' entry."""
+        from services.windows_gadget import WindowsDesktopContextMenuManager
+        return WindowsDesktopContextMenuManager.set_context_menu(enable)

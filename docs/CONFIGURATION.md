@@ -24,8 +24,8 @@ Open Settings by clicking the **`⚙`** icon on the widget header or right-click
 | **Widget Size** | حالت نمایش ویجت | `Expanded` | Switches between `Expanded`, `Compact`, and `Ultra-Compact` modes. |
 | **Number Format** | نمایش ارقام | `Persian (۱۲۳)` | Choose Persian digits (`۰۱۲۳۴۵۶۷۸۹`) or Western digits (`0123456789`). |
 | **Window Opacity** | شفافیت پنجره | `96%` | Adjust desktop translucency between `50%` and `100%`. |
-| **Always on Top** | همیشه روی سایر پنجره‌ها | `Enabled` | Keeps the desktop gadget above normal and maximized windows without stealing focus. |
-| **Start with Windows** | اجرا همزمان با شروع ویندوز | `Disabled` | Registers/unregisters `Chande` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. |
+| **Start with Windows** | اجرای خودکار هنگام بالا آمدن ویندوز | `Enabled` | Registers/unregisters `Chande` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. |
+| **Add 'Chande' to Desktop Context Menu** | افزودن گزینه «Chande» به منوی راست‌کلیک دسکتاپ | `Enabled` | Registers/unregisters `Chande` under `HKCU\Software\Classes\DesktopBackground\Shell\Chande` and displays live installation status. |
 | **Show 24h Sparkline** | نمایش نمودار روند در کارت‌ها | `Enabled` | Toggles mini trend sparklines on primary cards in Expanded mode. |
 | **Show Secondary Cards** | نمایش کارت‌های فرعی | `Enabled` | Toggles secondary market strip (`sekee`, `eur`, `gbp`, `aed`). |
 

@@ -460,7 +460,7 @@ def test_continuous_resizing_zero_api_calls_and_preserve_gadget_behavior(qapp, t
     hwnd = int(win.winId())
     ex_style = get_window_ex_style(hwnd)
     assert is_window_in_alt_tab(hwnd) is False
-    assert is_window_topmost(hwnd) is True
+    assert is_window_topmost(hwnd) is False
     assert bool(ex_style & WS_EX_TOOLWINDOW) is True
     assert bool(ex_style & WS_EX_NOACTIVATE) is True
 

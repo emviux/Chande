@@ -14,7 +14,9 @@ from config.settings import AppSettings, SettingsManager
 from services.api_client import MarketApiClient
 from services.budget_manager import RequestBudgetManager
 from services.windows_gadget import (
+    GWLP_HWNDPARENT,
     HWND_BOTTOM,
+    HWND_TOP,
     HWND_TOPMOST,
     SC_MINIMIZE,
     SWP_HIDEWINDOW,
@@ -26,16 +28,22 @@ from services.windows_gadget import (
     WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST,
     SingleInstanceController,
+    WindowsDesktopContextMenuManager,
     WindowsStartupManager,
+    _get_window_long_ptr,
     ensure_gadget_visible_on_desktop,
     get_window_ex_style,
+    is_desktop_shell_above_window,
+    is_window_behind_other_window,
     is_window_in_alt_tab,
     is_window_minimized_or_hidden,
+    is_window_obscured,
     is_window_stealing_foreground,
     is_window_topmost,
 )
 from storage.cache_store import CacheStore
 from ui.main_window import MainWindow
+from ui.settings_dialog import SettingsDialog
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +58,6 @@ def _make_gadget(tmp_path: Path, enable_tray: bool = False) -> MainWindow:
     sm = SettingsManager(config_path=tmp_path / "user_config.json")
     sm.update(
         api_key="test_key_123456",
-        always_on_top=True,
         start_with_windows=True,
         confirm_manual_refresh=False,
     )
@@ -70,48 +77,99 @@ def _make_gadget(tmp_path: Path, enable_tray: bool = False) -> MainWindow:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-native HWND styles test")
 def test_gadget_native_window_styles_and_alt_tab_exclusion(qapp, tmp_path: Path) -> None:
-    """Verify Chande is visible on the desktop, has WS_EX_TOOLWINDOW, no WS_EX_APPWINDOW, and is excluded from Alt+Tab."""
+    """Verify Chande is visible on the desktop layer (non-topmost by default), has WS_EX_TOOLWINDOW, no WS_EX_APPWINDOW, and is excluded from Alt+Tab."""
     win = _make_gadget(tmp_path)
     win.show_gadget_without_focus()
     qapp.processEvents()
 
     hwnd = int(win.winId())
     assert win.isVisible() is True
+    assert win.settings_manager.settings.always_on_top is False
 
     ex_style = get_window_ex_style(hwnd)
     assert bool(ex_style & WS_EX_TOOLWINDOW) is True, "Must have WS_EX_TOOLWINDOW"
     assert bool(ex_style & WS_EX_APPWINDOW) is False, "Must NOT have WS_EX_APPWINDOW"
     assert bool(ex_style & WS_EX_NOACTIVATE) is True, "Must have WS_EX_NOACTIVATE"
-    assert is_window_topmost(hwnd) is True, "Must have WS_EX_TOPMOST"
+    assert is_window_topmost(hwnd) is False, "Must NOT have WS_EX_TOPMOST in desktop-gadget mode"
     assert is_window_in_alt_tab(hwnd) is False, "Must NOT appear in Windows Alt+Tab switcher"
 
     win.close()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-native z-order & focus test")
-def test_gadget_stays_above_maximized_window_without_stealing_focus(qapp, tmp_path: Path) -> None:
-    """Verify Chande stays topmost when another normal window is opened/maximized and never steals focus."""
+def test_gadget_stays_behind_normal_and_maximized_windows_without_stealing_focus(
+    qapp, tmp_path: Path
+) -> None:
+    """Verify Chande stays on the desktop layer behind Antigravity, Chrome, and File Explorer windows and never steals focus."""
     win = _make_gadget(tmp_path)
+    win.setGeometry(220, 140, 420, 360)
     win.show_gadget_without_focus()
     qapp.processEvents()
     hwnd = int(win.winId())
 
-    # Open and maximize a standard application window
-    other_app = QMainWindow()
-    other_app.setWindowTitle("Other Normal Application")
-    other_app.resize(800, 600)
-    other_app.showMaximized()
-    other_app.raise_()
-    other_app.activateWindow()
+    # 1. Open and maximize a standard application window (e.g., Antigravity)
+    antigravity_app = QMainWindow()
+    antigravity_app.setWindowTitle("Antigravity")
+    antigravity_app.resize(900, 650)
+    antigravity_app.showMaximized()
+    antigravity_app.raise_()
+    antigravity_app.activateWindow()
+    win._on_normal_window_activated(int(antigravity_app.winId()))
     qapp.processEvents()
 
-    # Chande must remain visible and topmost while not stealing foreground focus
+    # Chande must stay behind maximized Antigravity and not be topmost
     assert win.isVisible() is True
-    assert is_window_topmost(hwnd) is True
+    assert is_window_topmost(hwnd) is False
+    assert is_window_behind_other_window(hwnd, int(antigravity_app.winId())) is True
+    assert is_window_obscured(hwnd) is True
     assert is_window_stealing_foreground(hwnd) is False
     assert is_window_in_alt_tab(hwnd) is False
 
-    other_app.close()
+    # 2. Open normal application windows (Chrome and File Explorer) and switch between them
+    chrome_app = QMainWindow()
+    chrome_app.setWindowTitle("Google Chrome")
+    chrome_app.setGeometry(180, 100, 760, 540)
+    chrome_app.show()
+    chrome_app.raise_()
+    chrome_app.activateWindow()
+    win._on_normal_window_activated(int(chrome_app.winId()))
+    qapp.processEvents()
+
+    explorer_app = QMainWindow()
+    explorer_app.setWindowTitle("File Explorer")
+    explorer_app.setGeometry(200, 120, 720, 500)
+    explorer_app.show()
+    explorer_app.raise_()
+    explorer_app.activateWindow()
+    win._on_normal_window_activated(int(explorer_app.winId()))
+    qapp.processEvents()
+
+    assert is_window_topmost(hwnd) is False
+    assert is_window_behind_other_window(hwnd, int(antigravity_app.winId())) is True
+    assert is_window_behind_other_window(hwnd, int(chrome_app.winId())) is True
+    assert is_window_behind_other_window(hwnd, int(explorer_app.winId())) is True
+    assert is_window_stealing_foreground(hwnd) is False
+
+    # 3. Minimize all normal applications -> Chande remains visible on the desktop
+    antigravity_app.showMinimized()
+    chrome_app.showMinimized()
+    explorer_app.showMinimized()
+    qapp.processEvents()
+    assert win.isVisible() is True
+    assert win.isMinimized() is False
+
+    # 4. Restore maximized Antigravity -> Chande goes behind it again
+    antigravity_app.showMaximized()
+    antigravity_app.raise_()
+    antigravity_app.activateWindow()
+    win._on_normal_window_activated(int(antigravity_app.winId()))
+    qapp.processEvents()
+    assert is_window_behind_other_window(hwnd, int(antigravity_app.winId())) is True
+    assert is_window_topmost(hwnd) is False
+
+    explorer_app.close()
+    chrome_app.close()
+    antigravity_app.close()
     win.close()
 
 
@@ -274,7 +332,7 @@ def test_windows_show_desktop_keeps_gadget_visible_and_unminimized(qapp, tmp_pat
         assert win.size() == initial_size
         assert win.pos() == initial_pos
 
-        # 3. Simulate shell SetWindowPos trying to hide Chande, move it to (-32000, -32000), or drop it to HWND_BOTTOM
+        # 3. Simulate shell SetWindowPos trying to hide Chande or move it to (-32000, -32000)
         user32.SetWindowPos(
             hwnd,
             HWND_BOTTOM,
@@ -287,48 +345,42 @@ def test_windows_show_desktop_keeps_gadget_visible_and_unminimized(qapp, tmp_pat
         qapp.processEvents()
         assert win.isVisible() is True
         assert is_window_minimized_or_hidden(hwnd) is False
-        assert is_window_topmost(hwnd) is True
+        assert is_window_topmost(hwnd) is False
         assert win.size() == initial_size
         assert win.pos() == initial_pos
 
-        # 4. Simulate Windows Show Desktop raising WorkerW above all windows into HWND_TOPMOST (multiple toggles)
-        with patch("services.windows_gadget.find_desktop_shell_hwnds", return_value=[shell_hwnd]):
+        # 4. Simulate Windows Show Desktop raising WorkerW above all windows, then restoring a normal window
+        # Verify GWLP_HWNDPARENT is 0 (unowned) so Explorer never hides/minimizes Chande as an owned shell window
+        assert _get_window_long_ptr(hwnd, GWLP_HWNDPARENT) == 0
+        with patch("services.windows_gadget.find_desktop_shell_hwnds", return_value=(shell_hwnd, 0)):
             for _ in range(3):
-                # Explorer raises WorkerW to top of HWND_TOPMOST band on Show Desktop click
-                user32.SetWindowPos(shell_hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
+                # Explorer raises WorkerW to top of non-topmost Z-order on Show Desktop click
+                user32.SetWindowPos(shell_hwnd, HWND_TOP, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
                 win._on_show_desktop_detected()
                 qapp.processEvents()
 
                 assert win.isVisible() is True
                 assert win.isMinimized() is False
-                assert is_window_topmost(hwnd) is True
+                assert is_desktop_shell_above_window(hwnd) is False, "Chande must be immediately above raised WorkerW without requiring right-click"
+                assert is_window_behind_other_window(shell_hwnd, hwnd) is True
+                assert is_window_topmost(hwnd) is False, "Chande must never use HWND_TOPMOST"
                 assert is_window_in_alt_tab(hwnd) is False
                 assert is_window_stealing_foreground(hwnd) is False
                 assert win.size() == initial_size
                 assert win.pos() == initial_pos
 
-                # Toggle Show Desktop off by activating the normal app window
+                # Toggle Show Desktop off by dropping shell_hwnd back to bottom and activating the normal app window
+                user32.SetWindowPos(shell_hwnd, HWND_BOTTOM, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
+                normal_app.raise_()
+                normal_app.activateWindow()
                 win._on_normal_window_activated(int(normal_app.winId()))
                 qapp.processEvents()
                 assert win.isVisible() is True
+                assert is_window_topmost(hwnd) is False
+                assert is_window_behind_other_window(hwnd, int(normal_app.winId())) is True
+                assert is_window_behind_other_window(shell_hwnd, hwnd) is True, "Chande must stay above desktop shell even when behind normal apps"
                 assert win.size() == initial_size
                 assert win.pos() == initial_pos
-
-        # 5. Also verify Show Desktop protection when user has Always-on-Top unchecked (unpinned desktop gadget)
-        win.settings_manager.update(always_on_top=False)
-        with patch("services.windows_gadget.find_desktop_shell_hwnds", return_value=[shell_hwnd]):
-            user32.SetWindowPos(shell_hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0001 | 0x0002 | SWP_NOACTIVATE)
-            win._on_show_desktop_detected()
-            qapp.processEvents()
-            assert win.isVisible() is True
-            assert is_window_topmost(hwnd) is True
-            assert win.size() == initial_size
-
-            # When normal window is activated again, unpinned gadget returns to non-topmost cleanly
-            win._on_normal_window_activated(int(normal_app.winId()))
-            qapp.processEvents()
-            assert win.isVisible() is True
-            assert win.size() == initial_size
 
         assert mock_fetch.call_count == 0
 
@@ -336,5 +388,85 @@ def test_windows_show_desktop_keeps_gadget_visible_and_unminimized(qapp, tmp_pat
     normal_app.close()
     if win.tray_icon is not None:
         win.tray_icon.hide()
+    win._is_quitting = True
+    win.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows HKCU DesktopBackground Shell context menu test")
+def test_desktop_context_menu_registration_settings_and_single_instance(qapp, tmp_path: Path) -> None:
+    """Verify HKCU DesktopBackground\\Shell\\Chande registration, Settings toggle, and single-instance behavior."""
+    # 1. Enable context menu in HKCU and verify idempotency and values
+    ok1, err1 = WindowsDesktopContextMenuManager.set_context_menu(True)
+    assert ok1 is True and err1 == ""
+    ok2, err2 = WindowsDesktopContextMenuManager.set_context_menu(True)
+    assert ok2 is True and err2 == ""
+    assert WindowsDesktopContextMenuManager.is_registered_and_valid() is True
+
+    cmd = WindowsDesktopContextMenuManager.get_registered_command()
+    assert cmd is not None and len(cmd) > 0
+    label, icon = WindowsDesktopContextMenuManager.get_registered_verb_info()
+    assert label == "Chande"
+    assert icon is not None and "chande.ico" in icon.lower()
+
+    # 2. Test SettingsDialog integration: disabling removes the HKCU registry entry, re-enabling restores it
+    win = _make_gadget(tmp_path, enable_tray=False)
+    win.show_gadget_without_focus()
+    qapp.processEvents()
+
+    with patch.object(win.api_client, "fetch_latest") as mock_fetch:
+        dlg = SettingsDialog(
+            settings_manager=win.settings_manager,
+            budget_manager=win.budget_manager,
+            cache_store=win.cache_store,
+            api_client=win.api_client,
+            parent=win,
+        )
+        dlg.settings_saved.connect(win._on_settings_saved)
+        assert dlg.desktop_context_menu_cb.isChecked() is True
+
+        # Disable from Settings
+        dlg.desktop_context_menu_cb.setChecked(False)
+        dlg._on_save()
+        qapp.processEvents()
+
+        assert win.settings_manager.settings.desktop_context_menu is False
+        assert WindowsDesktopContextMenuManager.is_registered_and_valid() is False
+        assert WindowsDesktopContextMenuManager.get_registered_command() is None
+
+        # Re-enable from Settings
+        dlg2 = SettingsDialog(
+            settings_manager=win.settings_manager,
+            budget_manager=win.budget_manager,
+            cache_store=win.cache_store,
+            api_client=win.api_client,
+            parent=win,
+        )
+        dlg2.settings_saved.connect(win._on_settings_saved)
+        assert dlg2.desktop_context_menu_cb.isChecked() is False
+        dlg2.desktop_context_menu_cb.setChecked(True)
+        dlg2._on_save()
+        qapp.processEvents()
+
+        assert win.settings_manager.settings.desktop_context_menu is True
+        assert WindowsDesktopContextMenuManager.is_registered_and_valid() is True
+
+        # 3. Verify single-instance behavior when 'Run Chande' is clicked while visible vs hidden
+        assert win.isVisible() is True
+        win.on_second_instance_activated()
+        qapp.processEvents()
+        assert win.isVisible() is True
+        assert is_window_topmost(int(win.winId())) is False
+
+        win._explicitly_hidden = True
+        win.hide()
+        qapp.processEvents()
+        assert win.isVisible() is False
+
+        win.on_second_instance_activated()
+        qapp.processEvents()
+        assert win.isVisible() is True
+        assert win._explicitly_hidden is False
+        assert mock_fetch.call_count == 0
+
     win._is_quitting = True
     win.close()
